@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "EA MT5 Pro"
 #property link      ""
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 
 //+------------------------------------------------------------------+
