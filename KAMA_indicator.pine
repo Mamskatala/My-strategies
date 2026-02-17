@@ -10,6 +10,8 @@ slow = input.int(30, "Slow", minval=1)
 var float kama = na
 var float fastend = na
 var float slowend = na
+var float efratio = 1.0
+var float smooth = 1.0
 
 // Initialize on first bar
 if bar_index == 0
@@ -18,14 +20,13 @@ if bar_index == 0
     slowend := 2.0 / (slow + 1)
 else
     // Calculate efficiency ratio
-    diff = math.abs(close - close[1])
     signal = math.abs(close - close[period])
     noise = math.sum(math.abs(close - close[1]), period)
     
-    efratio = noise != 0 ? signal / noise : 1.0
+    efratio := noise != 0 ? signal / noise : 1.0
     
     // Calculate smooth constant
-    smooth = math.pow(efratio * (fastend - slowend) + slowend, 2)
+    smooth := math.pow(efratio * (fastend - slowend) + slowend, 2)
     
     // Calculate KAMA
     kama := kama[1] + smooth * (close - kama[1])
@@ -34,7 +35,7 @@ else
 plot(kama, "KAMA", color=color.blue, linewidth=2)
 
 // Optional: Calculate and display MA period equivalent
-ma_period = na(kama) ? na : 2.0 / math.pow(efratio * (fastend - slowend) + slowend, 2) - 1
+ma_period = 2.0 / smooth - 1
 
 // Optional: Add table to display current values
 var table infoTable = table.new(position.top_right, 3, 4, border_width=1)
@@ -44,10 +45,6 @@ if barstate.islast
     table.cell(infoTable, 0, 1, "KAMA")
     table.cell(infoTable, 1, 1, str.tostring(kama, "#.###"))
     table.cell(infoTable, 0, 2, "EF Ratio")
-    diff_last = math.abs(close - close[1])
-    signal_last = math.abs(close - close[period])
-    noise_last = math.sum(math.abs(close - close[1]), period)
-    efratio_last = noise_last != 0 ? signal_last / noise_last : 1.0
-    table.cell(infoTable, 1, 2, str.tostring(efratio_last, "#.####"))
+    table.cell(infoTable, 1, 2, str.tostring(efratio, "#.####"))
     table.cell(infoTable, 0, 3, "MA Period")
     table.cell(infoTable, 1, 3, str.tostring(ma_period, "#.##"))
