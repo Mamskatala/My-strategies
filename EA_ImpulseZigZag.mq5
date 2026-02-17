@@ -82,6 +82,9 @@ input int  MaxSpreadPoints = 30;                          // Max Spread Points
 input bool UseVolatilityFilter = true;                    // Use Volatility Filter
 input int  MagicNumber = 888999;                          // Magic Number
 
+// Debug Mode
+input bool DebugMode = false;                             // Debug Mode (verbose logging)
+
 //+------------------------------------------------------------------+
 //| GLOBAL VARIABLES                                                 |
 //+------------------------------------------------------------------+
@@ -118,6 +121,9 @@ int lastTradedDate = 0;
 double triggerLevel = 0.0;
 int triggerType = 0; // ORDER_TYPE_BUY or ORDER_TYPE_SELL
 
+// Track last checked bar to avoid re-checking
+datetime lastCheckedBarTime = 0;
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -147,6 +153,7 @@ int OnInit()
    zigzagState = WAITING_IMPULSE;
    tradeExecutedToday = false;
    lastTradedDate = 0;
+   lastCheckedBarTime = 0;
    
    // Print configuration
    Print("════════════════════════════════════════");
@@ -156,11 +163,19 @@ int OnInit()
    Print("Timeframe: M5");
    Print("Arrow Mode: ", EnumToString(ArrowMode));
    Print("Trade Direction: ", EnumToString(TradeDirection));
-   Print("Entry Time: ", IntegerToString(EntryHour), ":", IntegerToString(EntryMinute));
-   Print("ATR Period: ", ATRPeriod);
+   Print("Entry Time: ", IntegerToString(EntryHour), ":", StringFormat("%02d", EntryMinute));
+   Print("Impulse ATR Range: ", ImpulseMinATRMult, "x - ", ImpulseMaxATRMult, "x");
+   Print("Impulse Body Min: ", ImpulseBodyPercent, "%");
+   Print("Pullback Retrace: ", PullbackMinRetrace*100, "% - ", PullbackMaxRetrace*100, "%");
    Print("Risk Percent: ", RiskPercent, "%");
+   Print("R:R Ratio: ", RiskRewardRatio);
+   Print("Debug Mode: ", (DebugMode ? "ON" : "OFF"));
    Print("Magic Number: ", MagicNumber);
    Print("════════════════════════════════════════");
+   if(!DebugMode)
+   {
+      Print("TIP: Enable DebugMode=true for detailed logging");
+   }
    
    return INIT_SUCCEEDED;
 }
@@ -193,32 +208,66 @@ void OnTick()
       tradeExecutedToday = false;
       impulseDetected = false;
       zigzagState = WAITING_IMPULSE;
-      Print("New day - Trading status reset");
+      lastCheckedBarTime = 0;
+      if(DebugMode) Print("New day - Trading status reset");
    }
    
    // Check if already traded today
    if(OneTradePerDay && tradeExecutedToday)
+   {
+      if(DebugMode) Print("Already traded today - skipping");
       return;
+   }
    
    // Check if position already open
    if(PositionSelect(_Symbol))
+   {
+      if(DebugMode) Print("Position already open - skipping");
       return;
+   }
    
-   // === STEP 2: CHECK ENTRY TIME ===
-   MqlDateTime dt_now;
-   TimeToStruct(TimeCurrent(), dt_now);
-   bool isEntryTime = (dt_now.hour == EntryHour && dt_now.min == EntryMinute);
+   // === STEP 2: CHECK FOR NEW BAR & ENTRY TIME ===
+   // Get the last closed bar time (index 1)
+   datetime currentBarTime = iTime(_Symbol, PERIOD_M5, 1);
+   
+   // Only process if we have a new bar
+   if(currentBarTime == lastCheckedBarTime && zigzagState == WAITING_IMPULSE)
+   {
+      if(DebugMode && MathMod(TimeCurrent(), 60) == 0) 
+         Print("DEBUG: Waiting for new bar. State: ", EnumToString(zigzagState));
+      return;
+   }
    
    // === STEP 3: STATE MACHINE ===
    switch(zigzagState)
    {
       case WAITING_IMPULSE:
-         if(isEntryTime)
          {
-            if(DetectImpulseCandle())
+            // Check if the last closed bar (index 1) matches entry time
+            MqlDateTime dt_bar;
+            TimeToStruct(currentBarTime, dt_bar);
+            bool isEntryBar = (dt_bar.hour == EntryHour && dt_bar.min == EntryMinute);
+            
+            if(DebugMode)
             {
-               zigzagState = WAITING_PULLBACK1;
-               Print("Impulse detected - Waiting for pullback");
+               Print("DEBUG: Checking for impulse. Bar time: ", TimeToString(currentBarTime), 
+                     " | Entry time: ", IntegerToString(EntryHour), ":", IntegerToString(EntryMinute),
+                     " | Match: ", isEntryBar ? "YES" : "NO");
+            }
+            
+            if(isEntryBar)
+            {
+               lastCheckedBarTime = currentBarTime; // Mark this bar as checked
+               
+               if(DetectImpulseCandle())
+               {
+                  zigzagState = WAITING_PULLBACK1;
+                  Print("✓ Impulse detected - Waiting for pullback");
+               }
+               else
+               {
+                  if(DebugMode) Print("✗ No valid impulse at entry time");
+               }
             }
          }
          break;
@@ -227,9 +276,11 @@ void OnTick()
          {
             int barsSinceImpulse = iBarShift(_Symbol, PERIOD_M5, impulseBarTime, false);
             
+            if(DebugMode) Print("DEBUG: WAITING_PULLBACK1 - Bars since impulse: ", barsSinceImpulse);
+            
             if(barsSinceImpulse > PullbackMaxBars)
             {
-               Print("Timeout pullback - Abandoning");
+               Print("✗ Timeout pullback - Abandoning");
                ResetZigzagState();
                return;
             }
@@ -237,7 +288,7 @@ void OnTick()
             if(DetectPullback1())
             {
                zigzagState = WAITING_PULLBACK2;
-               Print("Pullback 1 detected - Waiting for pullback 2");
+               Print("✓ Pullback 1 detected - Waiting for pullback 2");
             }
          }
          break;
@@ -246,9 +297,11 @@ void OnTick()
          {
             int barsSinceImpulse = iBarShift(_Symbol, PERIOD_M5, impulseBarTime, false);
             
+            if(DebugMode) Print("DEBUG: WAITING_PULLBACK2 - Bars since impulse: ", barsSinceImpulse);
+            
             if(barsSinceImpulse > PullbackMaxBars)
             {
-               Print("Timeout zigzag complete - Abandoning");
+               Print("✗ Timeout zigzag complete - Abandoning");
                ResetZigzagState();
                return;
             }
@@ -257,12 +310,14 @@ void OnTick()
             {
                zigzagState = WAITING_TRIGGER;
                CalculateTriggerLevel();
-               Print("ZigZag complete - Waiting for trigger");
+               Print("✓ ZigZag complete - Waiting for trigger");
             }
          }
          break;
       
       case WAITING_TRIGGER:
+         if(DebugMode && MathMod(TimeCurrent(), 30) == 0)
+            Print("DEBUG: WAITING_TRIGGER - Monitoring price for trigger at: ", triggerLevel);
          CheckTriggerAndExecute();
          break;
    }
@@ -293,25 +348,34 @@ bool DetectImpulseCandle()
    double impulseBody = MathAbs(impulseClose - impulseOpen);
    double bodyPercent = (impulseRange > 0) ? (impulseBody / impulseRange) * 100.0 : 0.0;
    
+   if(DebugMode)
+   {
+      Print("DEBUG IMPULSE CHECK:");
+      Print("  Range: ", DoubleToString(impulseRange, 5), " | ATR: ", DoubleToString(atrValue, 5));
+      Print("  Range/ATR: ", DoubleToString(impulseRange/atrValue, 2), "x (need: ", ImpulseMinATRMult, "-", ImpulseMaxATRMult, ")");
+      Print("  Body%: ", DoubleToString(bodyPercent, 1), "% (need: ≥", ImpulseBodyPercent, "%)");
+      Print("  Spread: ", SymbolInfoInteger(_Symbol, SYMBOL_SPREAD), " (max: ", MaxSpreadPoints, ")");
+   }
+   
    // === STRICT VALIDATION ===
    
    // Check range within ATR limits
    if(impulseRange < (ImpulseMinATRMult * atrValue))
    {
-      Print("Range too small: ", impulseRange, " < min: ", ImpulseMinATRMult * atrValue);
+      if(DebugMode) Print("✗ Range too small: ", DoubleToString(impulseRange, 5), " < min: ", DoubleToString(ImpulseMinATRMult * atrValue, 5));
       return false;
    }
    
    if(impulseRange > (ImpulseMaxATRMult * atrValue))
    {
-      Print("Range excessive (news?): ", impulseRange, " > max: ", ImpulseMaxATRMult * atrValue);
+      if(DebugMode) Print("✗ Range excessive (news?): ", DoubleToString(impulseRange, 5), " > max: ", DoubleToString(ImpulseMaxATRMult * atrValue, 5));
       return false;
    }
    
    // Check body percentage
    if(bodyPercent < ImpulseBodyPercent)
    {
-      Print("Body too weak: ", bodyPercent, "%");
+      if(DebugMode) Print("✗ Body too weak: ", DoubleToString(bodyPercent, 1), "% < ", ImpulseBodyPercent, "%");
       return false;
    }
    
@@ -319,7 +383,7 @@ bool DetectImpulseCandle()
    long currentSpread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    if(currentSpread > MaxSpreadPoints)
    {
-      Print("Spread too high: ", currentSpread);
+      if(DebugMode) Print("✗ Spread too high: ", currentSpread, " > ", MaxSpreadPoints);
       return false;
    }
    
@@ -332,13 +396,13 @@ bool DetectImpulseCandle()
    // Check trade direction compatibility
    if(TradeDirection == BUY_ONLY && impulseDirection == -1)
    {
-      Print("Bearish impulse but BUY_ONLY configured");
+      if(DebugMode) Print("✗ Bearish impulse but BUY_ONLY configured");
       return false;
    }
    
    if(TradeDirection == SELL_ONLY && impulseDirection == 1)
    {
-      Print("Bullish impulse but SELL_ONLY configured");
+      if(DebugMode) Print("✗ Bullish impulse but SELL_ONLY configured");
       return false;
    }
    
@@ -348,9 +412,9 @@ bool DetectImpulseCandle()
    
    Print("=== IMPULSE CANDLE DETECTED ===");
    Print("Direction: ", (impulseDirection == 1 ? "BULLISH" : "BEARISH"));
-   Print("Range: ", impulseRange, " Points");
-   Print("Body: ", bodyPercent, "%");
-   Print("ATR: ", atrValue);
+   Print("Range: ", DoubleToString(impulseRange, 5), " Points (", DoubleToString(impulseRange/atrValue, 2), "x ATR)");
+   Print("Body: ", DoubleToString(bodyPercent, 1), "%");
+   Print("ATR: ", DoubleToString(atrValue, 5));
    
    return true;
 }
@@ -371,6 +435,12 @@ bool DetectPullback1()
       // Calculate retracement levels
       double retraceMin = impulseLow + (impulseRange * PullbackMinRetrace);
       double retraceMax = impulseLow + (impulseRange * PullbackMaxRetrace);
+      
+      if(DebugMode)
+      {
+         Print("DEBUG PB1 (Bearish): Looking for pullback high between ", 
+               DoubleToString(retraceMin, 5), " and ", DoubleToString(retraceMax, 5));
+      }
       
       // Scan bars for Higher High
       pullback1High = 0.0;
@@ -394,8 +464,12 @@ bool DetectPullback1()
       if(pullback1High > 0)
       {
          pullback1Detected = true;
-         Print("Pullback 1 detected at: ", pullback1High, " bar: ", pullback1BarIndex);
+         Print("✓ Pullback 1 detected at: ", DoubleToString(pullback1High, 5), " (bar: ", pullback1BarIndex, ")");
          return true;
+      }
+      else if(DebugMode)
+      {
+         Print("DEBUG: No valid PB1 found yet");
       }
    }
    else if(impulseDirection == 1) // BULLISH impulse - looking for bearish pullback
@@ -403,6 +477,12 @@ bool DetectPullback1()
       // Calculate retracement levels
       double retraceMax = impulseHigh - (impulseRange * PullbackMinRetrace);
       double retraceMin = impulseHigh - (impulseRange * PullbackMaxRetrace);
+      
+      if(DebugMode)
+      {
+         Print("DEBUG PB1 (Bullish): Looking for pullback low between ", 
+               DoubleToString(retraceMin, 5), " and ", DoubleToString(retraceMax, 5));
+      }
       
       // Scan for Lower Low
       pullback1Low = 999999.0;
@@ -426,8 +506,12 @@ bool DetectPullback1()
       if(pullback1Low < 999999.0)
       {
          pullback1Detected = true;
-         Print("Pullback 1 detected at: ", pullback1Low);
+         Print("✓ Pullback 1 detected at: ", DoubleToString(pullback1Low, 5), " (bar: ", pullback1BarIndex, ")");
          return true;
+      }
+      else if(DebugMode)
+      {
+         Print("DEBUG: No valid PB1 found yet");
       }
    }
    
