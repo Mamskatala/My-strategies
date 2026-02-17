@@ -1,28 +1,49 @@
-# My-indicator
-inputs:period(8), fast(3), slow(30);
- 	vars:		efratio(0), smooth(1), fastend(.666), slowend(.0645), diff(0), signal(0), noise(0);
-   vars:    KAMA(0), adate(" "), MA(0);
+# My Trading Strategies Repository
 
-// calculate efficiency ratio 
-	if currentbar = 1 then begin
-			KAMA = close;
-			fastend = 2/(fast + 1);
-			slowend = 2/(slow + 1);
-			end
-		else begin
-			efratio = 1;
-			diff = absvalue(close - close[1]);
-			signal = absvalue(close - close[period]);
-			noise = summation(diff,period);
-			if noise <> 0 then efratio = signal / noise;
-			smooth = power(efratio*(fastend - slowend) + slowend,2);
-			KAMA = KAMA[1] + smooth*(close - KAMA[1]);
-		end;
-// ADAPTIVE MOVING AVERAGE
-   Plot1(KAMA,"KAMA");
-		
-	adate = ELdatetostring(date);
-	if currentbar = 1 then
-		print(file("c:\tradestation\KAMA_indicator.csv"), "Date,EFratio,MA,KAMA");
-	MA = 2./smooth - 1;
-	print(file("c:\tradestation\KAMA_indicator.csv"), adate, ",", efratio:8:4, ",", MA:6:2, ",", KAMA:8:3);
+This repository contains professional trading strategies and Expert Advisors.
+
+## Contents
+
+### EA MT5 Pro - Impulse & ZigZag Structure Trading System
+
+A professional MetaTrader 5 Expert Advisor that implements a sophisticated trading strategy based on:
+1. **Impulse candle detection** at specific times with ATR validation
+2. **ZigZag pullback structure** identification (2-leg pattern)
+3. **Strict trigger-based** trade execution
+
+**Main File:** `EA_ImpulseZigZag.mq5`
+
+#### Quick Links
+- 📖 [Complete Documentation](EA_ImpulseZigZag_README.md) - Full feature reference
+- 🚀 [Quick Start Guide](QUICK_START_GUIDE.md) - Installation and setup
+- ✅ [Technical Validation](TECHNICAL_VALIDATION.md) - Specification compliance
+- 📊 [Implementation Summary](IMPLEMENTATION_SUMMARY.md) - Project overview
+
+#### Key Features
+- ✅ State machine architecture (4 states)
+- ✅ Impulse validation (1.8-3.0x ATR, 60% body minimum)
+- ✅ ZigZag structure detection (35-65% retracement)
+- ✅ Dynamic position sizing with risk management
+- ✅ Continuation and Reversal modes
+- ✅ One trade per day enforcement (optional)
+- ✅ Comprehensive logging and safety filters
+
+#### Installation
+1. Copy `EA_ImpulseZigZag.mq5` to your MT5 `Experts` folder
+2. Open MetaEditor and compile (F7)
+3. Attach to an M5 chart
+4. Configure parameters and enable AutoTrading
+
+See [Quick Start Guide](QUICK_START_GUIDE.md) for detailed instructions.
+
+#### Requirements
+- MetaTrader 5 platform
+- M5 timeframe (mandatory)
+- Broker supporting automated trading
+- Demo account recommended for testing
+
+## License
+Copyright (c) 2026. All rights reserved.
+
+## Disclaimer
+Trading involves substantial risk of loss. Past performance is not indicative of future results. Always use proper risk management and never risk more than you can afford to lose.
