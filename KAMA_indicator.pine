@@ -35,7 +35,7 @@ else
 plot(kama, "KAMA", color=color.blue, linewidth=2)
 
 // Optional: Calculate and display MA period equivalent
-float ma_period = 2.0 / smooth - 1
+float ma_period = smooth > 0 ? 2.0 / smooth - 1 : na
 
 // Optional: Add table to display current values
 var table infoTable = table.new(position.top_right, 3, 4, border_width=1)
