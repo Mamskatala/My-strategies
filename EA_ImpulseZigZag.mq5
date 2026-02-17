@@ -39,6 +39,11 @@ input int    MagicNumber = 12345;            // Magic number for orders
 input group "=== Indicator Settings ==="
 input int    ATRPeriod = 14;                 // ATR period
 
+input group "=== Notifications ==="
+input bool   EnableAlerts = true;            // Enable popup alerts
+input bool   EnablePushNotifications = false; // Enable push to mobile
+input bool   EnableEmailNotifications = false; // Enable email alerts
+
 input group "=== Debugging ==="
 input bool   EnableLogging = true;           // Enable detailed logging
 input bool   EnableVisualMarkers = true;     // Enable chart markers
@@ -75,6 +80,26 @@ ENUM_ORDER_TYPE triggerType = ORDER_TYPE_BUY;
 
 // ATR handle
 int atrHandle = INVALID_HANDLE;
+
+//+------------------------------------------------------------------+
+//| Send notification (Alert, Push, Email)                          |
+//+------------------------------------------------------------------+
+void SendNotificationAlert(string message)
+{
+   string fullMessage = "[" + _Symbol + "] " + message;
+   
+   // Popup alert
+   if(EnableAlerts)
+      Alert(fullMessage);
+   
+   // Push notification to mobile
+   if(EnablePushNotifications)
+      SendNotification(fullMessage);
+   
+   // Email notification
+   if(EnableEmailNotifications)
+      SendMail("EA_ImpulseZigZag Alert - " + _Symbol, fullMessage);
+}
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -337,6 +362,11 @@ bool DetectImpulseCandle()
       Print("  Range: ", DoubleToString(impulseRange, _Digits));
    }
    
+   // Send notification
+   string direction = (impulseDirection == 1 ? "BULLISH" : "BEARISH");
+   SendNotificationAlert("🎯 Impulse Candle Detected - " + direction + 
+                        " | Range: " + DoubleToString(impulseRange, _Digits));
+   
    // Draw visual marker
    if(EnableVisualMarkers)
       MarkImpulseCandle();
@@ -396,6 +426,10 @@ bool DetectPullback()
                Print("  Bar index: ", i);
             }
             
+            // Send notification
+            SendNotificationAlert("📉 Pullback Detected - BULLISH | Price: " + 
+                                DoubleToString(close_i, _Digits));
+            
             return true;
          }
       }
@@ -419,6 +453,10 @@ bool DetectPullback()
                Print("  Rejection close: ", DoubleToString(close_i, _Digits));
                Print("  Bar index: ", i);
             }
+            
+            // Send notification
+            SendNotificationAlert("📈 Pullback Detected - BEARISH | Price: " + 
+                                DoubleToString(close_i, _Digits));
             
             return true;
          }
@@ -492,6 +530,11 @@ bool CheckTrigger()
          if(EnableLogging)
             Print("✅ TRIGGER HIT: Ask (", DoubleToString(ask, _Digits), 
                   ") >= Trigger (", DoubleToString(triggerLevel, _Digits), ")");
+         
+         // Send notification
+         SendNotificationAlert("🚀 Trigger Hit - BUY | Price: " + DoubleToString(ask, _Digits) + 
+                             " | Trigger: " + DoubleToString(triggerLevel, _Digits));
+         
          return true;
       }
    }
@@ -502,6 +545,11 @@ bool CheckTrigger()
          if(EnableLogging)
             Print("✅ TRIGGER HIT: Bid (", DoubleToString(bid, _Digits), 
                   ") <= Trigger (", DoubleToString(triggerLevel, _Digits), ")");
+         
+         // Send notification
+         SendNotificationAlert("🚀 Trigger Hit - SELL | Price: " + DoubleToString(bid, _Digits) + 
+                             " | Trigger: " + DoubleToString(triggerLevel, _Digits));
+         
          return true;
       }
    }
@@ -615,17 +663,32 @@ void ExecuteTrade()
             Print("  R:R ratio: 1:", DoubleToString(RewardRiskRatio, 1));
             Print("========================================");
          }
+         
+         // Send success notification
+         string tradeType = (triggerType == ORDER_TYPE_BUY ? "BUY" : "SELL");
+         SendNotificationAlert("✅ TRADE EXECUTED - " + tradeType + 
+                             " | Price: " + DoubleToString(request.price, _Digits) + 
+                             " | Lot: " + DoubleToString(lotSize, 2) + 
+                             " | SL: " + DoubleToString(stopLoss, _Digits) + 
+                             " | TP: " + DoubleToString(takeProfit, _Digits));
       }
       else
       {
          if(EnableLogging)
             Print("ERROR: Order failed - ", result.comment, " (", result.retcode, ")");
+         
+         // Send error notification
+         SendNotificationAlert("❌ TRADE FAILED - " + result.comment + " (Code: " + 
+                             IntegerToString(result.retcode) + ")");
       }
    }
    else
    {
       if(EnableLogging)
          Print("ERROR: OrderSend failed - ", GetLastError());
+      
+      // Send error notification
+      SendNotificationAlert("❌ ORDER SEND FAILED - Error: " + IntegerToString(GetLastError()));
    }
 }
 
