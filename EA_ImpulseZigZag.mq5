@@ -16,16 +16,20 @@ input int    EndHour = 22;                   // End hour (end of session)
 input bool   TradeBullish = true;            // Allow bullish trades
 input bool   TradeBearish = true;            // Allow bearish trades
 
+input group "=== Multi-Symbol Settings ==="
+input string TradingSymbols = "NDAQ,NAS100,US100"; // Symboles à trader (séparés par virgule)
+input bool   UseCurrentSymbolOnly = false;         // Si true, ignorer TradingSymbols
+
 input group "=== Impulse Candle Settings ==="
-input double ImpulseMinATRMult = 0.85;       // Min ATR multiplier (0.85 allows 85%+ ATR bars, relaxed to increase trade opportunities)
+input double ImpulseMinATRMult = 0.60;       // Min ATR multiplier (assouplir de 0.85 → 0.60)
 input double ImpulseMaxATRMult = 4.0;        // Max ATR multiplier (increased from 3.0)
-input double ImpulseBodyPercent = 50.0;      // Min body % (relaxed from 60%)
-input int    MaxSpreadPoints = 1500;          // Max spread in points (1500 for indices like NDAQ)
+input double ImpulseBodyPercent = 35.0;      // Min body % (assouplir de 50% → 35%)
+input int    MaxSpreadPoints = 2500;         // Max spread in points (augmenter de 1500 → 2500)
 
 input group "=== Pullback Settings ==="
-input int    PullbackMaxBars = 24;           // Max bars for pullback (2 hours on M5)
-input double PullbackMinRetrace = 0.40;      // Min retracement into impulse
-input double PullbackMaxRetrace = 0.60;      // Max retracement (sweet spot zone)
+input int    PullbackMaxBars = 36;           // Max bars for pullback (24 → 36 bars = 3 heures)
+input double PullbackMinRetrace = 0.30;      // Min retracement (40% → 30%)
+input double PullbackMaxRetrace = 0.70;      // Max retracement (60% → 70%)
 
 input group "=== Trigger Settings ==="
 input int    TriggerBufferPoints = 5;        // Trigger buffer in points
@@ -56,30 +60,104 @@ enum ENUM_OBR_STATE
    WAITING_TRIGGER      // Wait for continuation break
 };
 
+//--- Multi-Symbol Data Structure
+struct SymbolOBRData
+{
+   string symbol;
+   ENUM_OBR_STATE state;
+   datetime impulseBarTime;
+   double impulseHigh, impulseLow, impulseRange;
+   int impulseDirection;
+   bool pullbackDetected;
+   int pullbackBarIndex;
+   double pullbackPrice;
+   datetime pullbackBarTime;
+   double triggerLevel;
+   ENUM_ORDER_TYPE triggerType;
+   bool tradeExecutedToday;
+   datetime lastTradeDate;
+   int atrHandle;
+   datetime lastBarTime;
+};
+
 //--- Global variables
-ENUM_OBR_STATE obrState = WAITING_IMPULSE;
-bool tradeExecutedToday = false;
-datetime lastTradeDate = 0;
+SymbolOBRData symbolDataArray[];
+bool isBacktest = false;
 
-// Impulse candle tracking
-datetime impulseBarTime = 0;
-double impulseHigh = 0;
-double impulseLow = 0;
-double impulseRange = 0;
-int impulseDirection = 0;  // 1 = bullish, -1 = bearish
+//--- Impulse detection statistics
+static int rejectedRangeSmall = 0;
+static int rejectedRangeLarge = 0;
+static int rejectedBodySmall = 0;
+static int rejectedSpread = 0;
+static int totalBarsScanned = 0;
 
-// Pullback tracking
-bool pullbackDetected = false;
-int pullbackBarIndex = 0;
-double pullbackPrice = 0;
-datetime pullbackBarTime = 0;
-
-// Trigger tracking
-double triggerLevel = 0;
-ENUM_ORDER_TYPE triggerType = ORDER_TYPE_BUY;
-
-// ATR handle
-int atrHandle = INVALID_HANDLE;
+//+------------------------------------------------------------------+
+//| Initialize symbols for multi-symbol support                      |
+//+------------------------------------------------------------------+
+bool InitializeSymbols()
+{
+   if(UseCurrentSymbolOnly)
+   {
+      ArrayResize(symbolDataArray, 1);
+      symbolDataArray[0].symbol = _Symbol;
+      symbolDataArray[0].state = WAITING_IMPULSE;
+      symbolDataArray[0].tradeExecutedToday = false;
+      symbolDataArray[0].lastTradeDate = 0;
+      symbolDataArray[0].pullbackDetected = false;
+      symbolDataArray[0].impulseDirection = 0;
+      symbolDataArray[0].lastBarTime = 0;
+      
+      // Initialize ATR for this symbol
+      symbolDataArray[0].atrHandle = iATR(_Symbol, PERIOD_M5, ATRPeriod);
+      if(symbolDataArray[0].atrHandle == INVALID_HANDLE)
+      {
+         Print("ERROR: Cannot initialize ATR for ", _Symbol);
+         return false;
+      }
+      
+      Print("Single-symbol mode: ", _Symbol);
+      return true;
+   }
+   
+   // Parse TradingSymbols (separated by commas)
+   string symbols[];
+   int count = StringSplit(TradingSymbols, ',', symbols);
+   
+   if(count <= 0)
+   {
+      Print("ERROR: No symbols found in TradingSymbols input");
+      return false;
+   }
+   
+   ArrayResize(symbolDataArray, count);
+   for(int i = 0; i < count; i++)
+   {
+      // Trim whitespace
+      StringTrimLeft(symbols[i]);
+      StringTrimRight(symbols[i]);
+      
+      symbolDataArray[i].symbol = symbols[i];
+      symbolDataArray[i].state = WAITING_IMPULSE;
+      symbolDataArray[i].tradeExecutedToday = false;
+      symbolDataArray[i].lastTradeDate = 0;
+      symbolDataArray[i].pullbackDetected = false;
+      symbolDataArray[i].impulseDirection = 0;
+      symbolDataArray[i].lastBarTime = 0;
+      
+      // Initialize ATR for each symbol
+      symbolDataArray[i].atrHandle = iATR(symbols[i], PERIOD_M5, ATRPeriod);
+      if(symbolDataArray[i].atrHandle == INVALID_HANDLE)
+      {
+         Print("ERROR: Cannot initialize ATR for ", symbols[i]);
+         return false;
+      }
+      
+      Print("Initialized symbol [", i, "]: ", symbols[i]);
+   }
+   
+   Print("Multi-symbol mode: ", count, " symbols configured");
+   return true;
+}
 
 //+------------------------------------------------------------------+
 //| Send notification (Alert, Push, Email)                          |
@@ -106,20 +184,27 @@ void SendNotificationAlert(string message)
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   // Initialize ATR indicator
-   atrHandle = iATR(_Symbol, PERIOD_M5, ATRPeriod);
-   if(atrHandle == INVALID_HANDLE)
+   // Detect if running in Strategy Tester
+   isBacktest = MQLInfoInteger(MQL_TESTER);
+   
+   if(isBacktest)
+      Print("Running in STRATEGY TESTER mode");
+   else
+      Print("Running in LIVE/DEMO mode");
+   
+   // Initialize symbols
+   if(!InitializeSymbols())
    {
-      Print("ERROR: Failed to create ATR indicator");
+      Print("ERROR: Failed to initialize symbols");
       return INIT_FAILED;
    }
    
    Print("========================================");
    Print("EA_ImpulseZigZag initialized successfully");
-   Print("Symbol: ", _Symbol);
    Print("Timeframe: M5");
    Print("Entry window: ", EntryHour, ":", (EntryMinute < 10 ? "0" : ""), EntryMinute, " - ", EndHour, ":00");
    Print("Session duration: ", (EndHour - EntryHour), " hours");
+   Print("Symbols: ", ArraySize(symbolDataArray));
    Print("========================================");
    
    return INIT_SUCCEEDED;
@@ -130,9 +215,12 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   // Release ATR handle
-   if(atrHandle != INVALID_HANDLE)
-      IndicatorRelease(atrHandle);
+   // Release ATR handles for all symbols
+   for(int i = 0; i < ArraySize(symbolDataArray); i++)
+   {
+      if(symbolDataArray[i].atrHandle != INVALID_HANDLE)
+         IndicatorRelease(symbolDataArray[i].atrHandle);
+   }
    
    // Clean up visual objects
    if(EnableVisualMarkers)
@@ -146,51 +234,59 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // Check if new bar formed on M5
-   static datetime lastBarTime = 0;
-   datetime currentBarTime = iTime(_Symbol, PERIOD_M5, 0);
+   // Loop through all symbols
+   for(int s = 0; s < ArraySize(symbolDataArray); s++)
+   {
+      ProcessSymbol(s);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Process individual symbol                                        |
+//+------------------------------------------------------------------+
+void ProcessSymbol(int symbolIndex)
+{
+   SymbolOBRData &data = symbolDataArray[symbolIndex];
    
-   if(currentBarTime == lastBarTime)
+   // Check if new bar formed on M5
+   datetime currentBarTime = iTime(data.symbol, PERIOD_M5, 0);
+   
+   if(currentBarTime == data.lastBarTime)
       return;  // Wait for new bar
    
-   lastBarTime = currentBarTime;
+   data.lastBarTime = currentBarTime;
    
    // Get current time
    MqlDateTime dt_now;
    TimeToStruct(TimeCurrent(), dt_now);
    
    // Reset daily trade flag at start of new day
-   datetime currentDate = iTime(_Symbol, PERIOD_D1, 0);
-   if(currentDate != lastTradeDate && lastTradeDate != 0)
+   datetime currentDate = iTime(data.symbol, PERIOD_D1, 0);
+   if(currentDate != data.lastTradeDate && data.lastTradeDate != 0)
    {
-      tradeExecutedToday = false;
-      obrState = WAITING_IMPULSE;
+      data.tradeExecutedToday = false;
+      data.state = WAITING_IMPULSE;
       if(EnableLogging)
-         Print("=== NEW TRADING DAY: ", TimeToString(currentDate, TIME_DATE), " ===");
+         Print("=== NEW TRADING DAY: ", data.symbol, " | ", TimeToString(currentDate, TIME_DATE), " ===");
    }
    
    // Check if we're in entry window
    bool isEntryTime = (dt_now.hour >= EntryHour && dt_now.hour < EndHour);
    
-   // Debug output
-   static datetime lastDebugTime = 0;
-   datetime currentMinute = iTime(_Symbol, PERIOD_M15, 0);
-   if(EnableLogging && currentMinute != lastDebugTime)  // Log every 15 min
+   // Debug output - log at each new M5 bar
+   if(EnableLogging && !isBacktest)
    {
-      lastDebugTime = currentMinute;
-      Print("DEBUG [", TimeToString(TimeCurrent()), "]");
-      Print("  State: ", EnumToString(obrState));
-      Print("  Entry window: ", (isEntryTime ? "OPEN" : "CLOSED"));
-      Print("  Trade today: ", (tradeExecutedToday ? "YES" : "NO"));
-      Print("  Position open: ", (PositionSelect(_Symbol) ? "YES" : "NO"));
+      Print("=== ", data.symbol, " | ", TimeToString(TimeCurrent()), " ===");
+      Print("State: ", EnumToString(data.state));
+      Print("Entry window: ", (isEntryTime ? "OPEN" : "CLOSED"));
    }
    
    // Skip if already traded today
-   if(tradeExecutedToday)
+   if(data.tradeExecutedToday)
       return;
    
    // Skip if position already open
-   if(PositionSelect(_Symbol))
+   if(PositionSelect(data.symbol))
       return;
    
    // Skip if outside entry window
@@ -198,45 +294,45 @@ void OnTick()
       return;
    
    // State machine
-   switch(obrState)
+   switch(data.state)
    {
       case WAITING_IMPULSE:
-         if(DetectImpulseCandle())
+         if(DetectImpulseCandle(symbolIndex))
          {
-            obrState = WAITING_PULLBACK;
-            pullbackDetected = false;
+            data.state = WAITING_PULLBACK;
+            data.pullbackDetected = false;
             if(EnableLogging)
-               Print(">>> STATE CHANGE: WAITING_IMPULSE -> WAITING_PULLBACK");
+               Print(">>> STATE CHANGE [", data.symbol, "]: WAITING_IMPULSE -> WAITING_PULLBACK");
          }
          break;
          
       case WAITING_PULLBACK:
-         if(DetectPullback())
+         if(DetectPullback(symbolIndex))
          {
-            obrState = WAITING_TRIGGER;
-            CalculateTriggerLevel();
+            data.state = WAITING_TRIGGER;
+            CalculateTriggerLevel(symbolIndex);
             if(EnableLogging)
-               Print(">>> STATE CHANGE: WAITING_PULLBACK -> WAITING_TRIGGER");
+               Print(">>> STATE CHANGE [", data.symbol, "]: WAITING_PULLBACK -> WAITING_TRIGGER");
          }
-         else if(CheckPullbackTimeout())
+         else if(CheckPullbackTimeout(symbolIndex))
          {
-            obrState = WAITING_IMPULSE;
+            data.state = WAITING_IMPULSE;
             if(EnableLogging)
-               Print(">>> TIMEOUT: Pullback took too long, resetting to WAITING_IMPULSE");
+               Print(">>> TIMEOUT [", data.symbol, "]: Pullback took too long, resetting to WAITING_IMPULSE");
          }
          break;
          
       case WAITING_TRIGGER:
-         if(CheckTrigger())
+         if(CheckTrigger(symbolIndex))
          {
-            ExecuteTrade();
-            obrState = WAITING_IMPULSE;
+            ExecuteTrade(symbolIndex);
+            data.state = WAITING_IMPULSE;
          }
-         else if(CheckTriggerTimeout())
+         else if(CheckTriggerTimeout(symbolIndex))
          {
-            obrState = WAITING_IMPULSE;
+            data.state = WAITING_IMPULSE;
             if(EnableLogging)
-               Print(">>> TIMEOUT: Trigger not hit, resetting to WAITING_IMPULSE");
+               Print(">>> TIMEOUT [", data.symbol, "]: Trigger not hit, resetting to WAITING_IMPULSE");
          }
          break;
    }
@@ -245,43 +341,48 @@ void OnTick()
 //+------------------------------------------------------------------+
 //| Detect impulse candle (Order Block)                             |
 //+------------------------------------------------------------------+
-bool DetectImpulseCandle()
+bool DetectImpulseCandle(int symbolIndex)
 {
+   SymbolOBRData &data = symbolDataArray[symbolIndex];
+   
    // Get ATR value
    double atr[];
    ArraySetAsSeries(atr, true);
-   if(CopyBuffer(atrHandle, 0, 1, 1, atr) <= 0)
+   if(CopyBuffer(data.atrHandle, 0, 1, 1, atr) <= 0)
    {
       if(EnableLogging)
-         Print("ERROR: Failed to copy ATR buffer");
+         Print("ERROR [", data.symbol, "]: Failed to copy ATR buffer");
       return false;
    }
    double atrValue = atr[0];
    
    // Get bar 1 data (completed bar)
-   double high1 = iHigh(_Symbol, PERIOD_M5, 1);
-   double low1 = iLow(_Symbol, PERIOD_M5, 1);
-   double open1 = iOpen(_Symbol, PERIOD_M5, 1);
-   double close1 = iClose(_Symbol, PERIOD_M5, 1);
-   datetime time1 = iTime(_Symbol, PERIOD_M5, 1);
+   double high1 = iHigh(data.symbol, PERIOD_M5, 1);
+   double low1 = iLow(data.symbol, PERIOD_M5, 1);
+   double open1 = iOpen(data.symbol, PERIOD_M5, 1);
+   double close1 = iClose(data.symbol, PERIOD_M5, 1);
+   datetime time1 = iTime(data.symbol, PERIOD_M5, 1);
    
    double range = high1 - low1;
    double body = MathAbs(close1 - open1);
    double bodyPercent = (range > 0) ? (body / range * 100.0) : 0;
    
    // Get current spread
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double ask = SymbolInfoDouble(data.symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(data.symbol, SYMBOL_BID);
+   double point = SymbolInfoDouble(data.symbol, SYMBOL_POINT);
    int currentSpread = (int)((ask - bid) / point);
    
    // Determine direction
    bool isBullish = (close1 > open1);
    bool isBearish = (close1 < open1);
    
-   if(EnableLogging)
+   // Increment total bars scanned
+   totalBarsScanned++;
+   
+   if(EnableLogging && !isBacktest)
    {
-      Print("=== SCANNING FOR IMPULSE (Bar[1]: ", TimeToString(time1), ") ===");
+      Print("=== SCANNING FOR IMPULSE [", data.symbol, "] (Bar[1]: ", TimeToString(time1), ") ===");
       Print("  Range: ", DoubleToString(range, _Digits), " | ATR: ", DoubleToString(atrValue, _Digits));
       Print("  Min required: ", DoubleToString(ImpulseMinATRMult * atrValue, _Digits));
       Print("  Max allowed: ", DoubleToString(ImpulseMaxATRMult * atrValue, _Digits));
@@ -293,107 +394,139 @@ bool DetectImpulseCandle()
    // Validation 1: Range vs ATR
    if(range < (ImpulseMinATRMult * atrValue))
    {
-      if(EnableLogging)
+      rejectedRangeSmall++;
+      if(EnableLogging && !isBacktest)
          Print("  ❌ REJECTED: Range too small (", DoubleToString(range, _Digits), " < ", 
                DoubleToString(ImpulseMinATRMult * atrValue, _Digits), ")");
+      PrintDetectionStats();
       return false;
    }
    
    if(range > (ImpulseMaxATRMult * atrValue))
    {
-      if(EnableLogging)
+      rejectedRangeLarge++;
+      if(EnableLogging && !isBacktest)
          Print("  ❌ REJECTED: Range too large (", DoubleToString(range, _Digits), " > ", 
                DoubleToString(ImpulseMaxATRMult * atrValue, _Digits), ")");
+      PrintDetectionStats();
       return false;
    }
    
    // Validation 2: Body percentage
    if(bodyPercent < ImpulseBodyPercent)
    {
-      if(EnableLogging)
+      rejectedBodySmall++;
+      if(EnableLogging && !isBacktest)
          Print("  ❌ REJECTED: Body too small (", DoubleToString(bodyPercent, 2), "% < ", 
                DoubleToString(ImpulseBodyPercent, 2), "%)");
+      PrintDetectionStats();
       return false;
    }
    
    // Validation 3: Spread
    if(currentSpread > MaxSpreadPoints)
    {
-      if(EnableLogging)
+      rejectedSpread++;
+      if(EnableLogging && !isBacktest)
          Print("  ❌ REJECTED: Spread too wide (", currentSpread, " > ", MaxSpreadPoints, ")");
+      PrintDetectionStats();
       return false;
    }
    
    // Validation 4: Direction matches settings
    if(isBullish && !TradeBullish)
    {
-      if(EnableLogging)
+      if(EnableLogging && !isBacktest)
          Print("  ❌ REJECTED: Bullish impulse but TradeBullish = false");
       return false;
    }
    
    if(isBearish && !TradeBearish)
    {
-      if(EnableLogging)
+      if(EnableLogging && !isBacktest)
          Print("  ❌ REJECTED: Bearish impulse but TradeBearish = false");
       return false;
    }
    
    if(!isBullish && !isBearish)
    {
-      if(EnableLogging)
+      if(EnableLogging && !isBacktest)
          Print("  ❌ REJECTED: Doji candle (no clear direction)");
       return false;
    }
    
    // All validations passed - impulse detected!
-   impulseBarTime = time1;
-   impulseHigh = high1;
-   impulseLow = low1;
-   impulseRange = range;
-   impulseDirection = isBullish ? 1 : -1;
+   data.impulseBarTime = time1;
+   data.impulseHigh = high1;
+   data.impulseLow = low1;
+   data.impulseRange = range;
+   data.impulseDirection = isBullish ? 1 : -1;
    
    if(EnableLogging)
    {
-      Print("  ✅ IMPULSE CANDLE DETECTED!");
-      Print("  Direction: ", (impulseDirection == 1 ? "BULLISH" : "BEARISH"));
-      Print("  High: ", DoubleToString(impulseHigh, _Digits));
-      Print("  Low: ", DoubleToString(impulseLow, _Digits));
-      Print("  Range: ", DoubleToString(impulseRange, _Digits));
+      Print("  ✅ IMPULSE CANDLE DETECTED [", data.symbol, "]!");
+      Print("  Direction: ", (data.impulseDirection == 1 ? "BULLISH" : "BEARISH"));
+      Print("  High: ", DoubleToString(data.impulseHigh, _Digits));
+      Print("  Low: ", DoubleToString(data.impulseLow, _Digits));
+      Print("  Range: ", DoubleToString(data.impulseRange, _Digits));
    }
    
    // Send notification
-   string direction = (impulseDirection == 1 ? "BULLISH" : "BEARISH");
-   SendNotificationAlert("🎯 Impulse Candle Detected - " + direction + 
-                        " | Range: " + DoubleToString(impulseRange, _Digits));
+   string direction = (data.impulseDirection == 1 ? "BULLISH" : "BEARISH");
+   SendNotificationAlert("🎯 Impulse Candle Detected [" + data.symbol + "] - " + direction + 
+                        " | Range: " + DoubleToString(data.impulseRange, _Digits));
    
    // Draw visual marker
    if(EnableVisualMarkers)
-      MarkImpulseCandle();
+      MarkImpulseCandle(symbolIndex);
    
    return true;
 }
 
 //+------------------------------------------------------------------+
+//| Print impulse detection statistics                               |
+//+------------------------------------------------------------------+
+void PrintDetectionStats()
+{
+   // Print summary every 100 bars
+   if(totalBarsScanned % 100 == 0 && EnableLogging && !isBacktest)
+   {
+      Print("=== IMPULSE DETECTION STATS (last 100 bars) ===");
+      Print("Range too small: ", rejectedRangeSmall);
+      Print("Range too large: ", rejectedRangeLarge);
+      Print("Body too small: ", rejectedBodySmall);
+      Print("Spread too wide: ", rejectedSpread);
+      
+      // Reset counters
+      rejectedRangeSmall = 0;
+      rejectedRangeLarge = 0;
+      rejectedBodySmall = 0;
+      rejectedSpread = 0;
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Detect pullback into sweet spot                                 |
 //+------------------------------------------------------------------+
-bool DetectPullback()
+bool DetectPullback(int symbolIndex)
 {
-   if(pullbackDetected)
+   SymbolOBRData &data = symbolDataArray[symbolIndex];
+   
+   if(data.pullbackDetected)
       return true;
    
-   // Calculate sweet spot zone (40-60% retracement into impulse)
+   // Calculate sweet spot zone (30-70% retracement into impulse)
    double sweetSpotHigh, sweetSpotLow;
    
-   if(impulseDirection == 1)  // Bullish OB
+   if(data.impulseDirection == 1)  // Bullish OB
    {
-      sweetSpotHigh = impulseHigh - (impulseRange * PullbackMinRetrace);
-      sweetSpotLow = impulseHigh - (impulseRange * PullbackMaxRetrace);
+      sweetSpotHigh = data.impulseHigh - (data.impulseRange * PullbackMinRetrace);
+      sweetSpotLow = data.impulseHigh - (data.impulseRange * PullbackMaxRetrace);
    }
    else  // Bearish OB
    {
-      sweetSpotLow = impulseLow + (impulseRange * PullbackMinRetrace);
-      sweetSpotHigh = impulseLow + (impulseRange * PullbackMaxRetrace);
+      sweetSpotLow = data.impulseLow + (data.impulseRange * PullbackMinRetrace);
+      sweetSpotHigh = data.impulseLow + (data.impulseRange * PullbackMaxRetrace);
    }
    
    // Scan recent bars for pullback into sweet spot
@@ -401,23 +534,23 @@ bool DetectPullback()
    
    for(int i = 1; i <= barsToCheck; i++)
    {
-      double high_i = iHigh(_Symbol, PERIOD_M5, i);
-      double low_i = iLow(_Symbol, PERIOD_M5, i);
-      double close_i = iClose(_Symbol, PERIOD_M5, i);
+      double high_i = iHigh(data.symbol, PERIOD_M5, i);
+      double low_i = iLow(data.symbol, PERIOD_M5, i);
+      double close_i = iClose(data.symbol, PERIOD_M5, i);
       
-      if(impulseDirection == 1)  // Bullish - look for dip into sweet spot then rejection up
+      if(data.impulseDirection == 1)  // Bullish - look for dip into sweet spot then rejection up
       {
          // Check if price dipped into sweet spot and closed back above it
          if(low_i <= sweetSpotLow && close_i >= sweetSpotHigh)
          {
-            pullbackDetected = true;
-            pullbackBarIndex = i;
-            pullbackPrice = close_i;
-            pullbackBarTime = iTime(_Symbol, PERIOD_M5, i);
+            data.pullbackDetected = true;
+            data.pullbackBarIndex = i;
+            data.pullbackPrice = close_i;
+            data.pullbackBarTime = iTime(data.symbol, PERIOD_M5, i);
             
             if(EnableLogging)
             {
-               Print("=== PULLBACK DETECTED ===");
+               Print("=== PULLBACK DETECTED [", data.symbol, "] ===");
                Print("  Direction: BULLISH");
                Print("  Sweet spot: ", DoubleToString(sweetSpotLow, _Digits), " - ", 
                      DoubleToString(sweetSpotHigh, _Digits));
@@ -427,7 +560,7 @@ bool DetectPullback()
             }
             
             // Send notification
-            SendNotificationAlert("📉 Pullback Detected - BULLISH | Price: " + 
+            SendNotificationAlert("📉 Pullback Detected [" + data.symbol + "] - BULLISH | Price: " + 
                                 DoubleToString(close_i, _Digits));
             
             return true;
@@ -438,14 +571,14 @@ bool DetectPullback()
          // Check if price rallied into sweet spot and closed back below it
          if(high_i >= sweetSpotHigh && close_i <= sweetSpotLow)
          {
-            pullbackDetected = true;
-            pullbackBarIndex = i;
-            pullbackPrice = close_i;
-            pullbackBarTime = iTime(_Symbol, PERIOD_M5, i);
+            data.pullbackDetected = true;
+            data.pullbackBarIndex = i;
+            data.pullbackPrice = close_i;
+            data.pullbackBarTime = iTime(data.symbol, PERIOD_M5, i);
             
             if(EnableLogging)
             {
-               Print("=== PULLBACK DETECTED ===");
+               Print("=== PULLBACK DETECTED [", data.symbol, "] ===");
                Print("  Direction: BEARISH");
                Print("  Sweet spot: ", DoubleToString(sweetSpotLow, _Digits), " - ", 
                      DoubleToString(sweetSpotHigh, _Digits));
@@ -455,7 +588,7 @@ bool DetectPullback()
             }
             
             // Send notification
-            SendNotificationAlert("📈 Pullback Detected - BEARISH | Price: " + 
+            SendNotificationAlert("📈 Pullback Detected [" + data.symbol + "] - BEARISH | Price: " + 
                                 DoubleToString(close_i, _Digits));
             
             return true;
@@ -469,15 +602,17 @@ bool DetectPullback()
 //+------------------------------------------------------------------+
 //| Check if pullback timeout exceeded                              |
 //+------------------------------------------------------------------+
-bool CheckPullbackTimeout()
+bool CheckPullbackTimeout(int symbolIndex)
 {
+   SymbolOBRData &data = symbolDataArray[symbolIndex];
+   
    datetime currentTime = TimeCurrent();
-   int barsSinceImpulse = Bars(_Symbol, PERIOD_M5, impulseBarTime, currentTime);
+   int barsSinceImpulse = Bars(data.symbol, PERIOD_M5, data.impulseBarTime, currentTime);
    
    if(barsSinceImpulse > PullbackMaxBars)
    {
       if(EnableLogging)
-         Print("TIMEOUT: ", barsSinceImpulse, " bars since impulse (max: ", PullbackMaxBars, ")");
+         Print("TIMEOUT [", data.symbol, "]: ", barsSinceImpulse, " bars since impulse (max: ", PullbackMaxBars, ")");
       return true;
    }
    
@@ -487,68 +622,71 @@ bool CheckPullbackTimeout()
 //+------------------------------------------------------------------+
 //| Calculate trigger level for entry                               |
 //+------------------------------------------------------------------+
-void CalculateTriggerLevel()
+void CalculateTriggerLevel(int symbolIndex)
 {
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   SymbolOBRData &data = symbolDataArray[symbolIndex];
+   double point = SymbolInfoDouble(data.symbol, SYMBOL_POINT);
    
-   if(impulseDirection == 1)  // Bullish OBR
+   if(data.impulseDirection == 1)  // Bullish OBR
    {
       // Trigger = break of pullback rejection high
-      double rejectionHigh = iHigh(_Symbol, PERIOD_M5, pullbackBarIndex);
-      triggerLevel = rejectionHigh + (TriggerBufferPoints * point);
-      triggerType = ORDER_TYPE_BUY;
+      double rejectionHigh = iHigh(data.symbol, PERIOD_M5, data.pullbackBarIndex);
+      data.triggerLevel = rejectionHigh + (TriggerBufferPoints * point);
+      data.triggerType = ORDER_TYPE_BUY;
       
       if(EnableLogging)
-         Print("🎯 TRIGGER BUY: Break of ", DoubleToString(rejectionHigh, _Digits), 
-               " + buffer = ", DoubleToString(triggerLevel, _Digits));
+         Print("🎯 TRIGGER BUY [", data.symbol, "]: Break of ", DoubleToString(rejectionHigh, _Digits), 
+               " + buffer = ", DoubleToString(data.triggerLevel, _Digits));
    }
    else  // Bearish OBR
    {
       // Trigger = break of pullback rejection low
-      double rejectionLow = iLow(_Symbol, PERIOD_M5, pullbackBarIndex);
-      triggerLevel = rejectionLow - (TriggerBufferPoints * point);
-      triggerType = ORDER_TYPE_SELL;
+      double rejectionLow = iLow(data.symbol, PERIOD_M5, data.pullbackBarIndex);
+      data.triggerLevel = rejectionLow - (TriggerBufferPoints * point);
+      data.triggerType = ORDER_TYPE_SELL;
       
       if(EnableLogging)
-         Print("🎯 TRIGGER SELL: Break of ", DoubleToString(rejectionLow, _Digits), 
-               " - buffer = ", DoubleToString(triggerLevel, _Digits));
+         Print("🎯 TRIGGER SELL [", data.symbol, "]: Break of ", DoubleToString(rejectionLow, _Digits), 
+               " - buffer = ", DoubleToString(data.triggerLevel, _Digits));
    }
 }
 
 //+------------------------------------------------------------------+
 //| Check if trigger level hit                                      |
 //+------------------------------------------------------------------+
-bool CheckTrigger()
+bool CheckTrigger(int symbolIndex)
 {
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   SymbolOBRData &data = symbolDataArray[symbolIndex];
    
-   if(triggerType == ORDER_TYPE_BUY)
+   double bid = SymbolInfoDouble(data.symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(data.symbol, SYMBOL_ASK);
+   
+   if(data.triggerType == ORDER_TYPE_BUY)
    {
-      if(ask >= triggerLevel)
+      if(ask >= data.triggerLevel)
       {
          if(EnableLogging)
-            Print("✅ TRIGGER HIT: Ask (", DoubleToString(ask, _Digits), 
-                  ") >= Trigger (", DoubleToString(triggerLevel, _Digits), ")");
+            Print("✅ TRIGGER HIT [", data.symbol, "]: Ask (", DoubleToString(ask, _Digits), 
+                  ") >= Trigger (", DoubleToString(data.triggerLevel, _Digits), ")");
          
          // Send notification
-         SendNotificationAlert("🚀 Trigger Hit - BUY | Price: " + DoubleToString(ask, _Digits) + 
-                             " | Trigger: " + DoubleToString(triggerLevel, _Digits));
+         SendNotificationAlert("🚀 Trigger Hit [" + data.symbol + "] - BUY | Price: " + DoubleToString(ask, _Digits) + 
+                             " | Trigger: " + DoubleToString(data.triggerLevel, _Digits));
          
          return true;
       }
    }
    else  // SELL
    {
-      if(bid <= triggerLevel)
+      if(bid <= data.triggerLevel)
       {
          if(EnableLogging)
-            Print("✅ TRIGGER HIT: Bid (", DoubleToString(bid, _Digits), 
-                  ") <= Trigger (", DoubleToString(triggerLevel, _Digits), ")");
+            Print("✅ TRIGGER HIT [", data.symbol, "]: Bid (", DoubleToString(bid, _Digits), 
+                  ") <= Trigger (", DoubleToString(data.triggerLevel, _Digits), ")");
          
          // Send notification
-         SendNotificationAlert("🚀 Trigger Hit - SELL | Price: " + DoubleToString(bid, _Digits) + 
-                             " | Trigger: " + DoubleToString(triggerLevel, _Digits));
+         SendNotificationAlert("🚀 Trigger Hit [" + data.symbol + "] - SELL | Price: " + DoubleToString(bid, _Digits) + 
+                             " | Trigger: " + DoubleToString(data.triggerLevel, _Digits));
          
          return true;
       }
@@ -560,16 +698,18 @@ bool CheckTrigger()
 //+------------------------------------------------------------------+
 //| Check if trigger timeout exceeded                               |
 //+------------------------------------------------------------------+
-bool CheckTriggerTimeout()
+bool CheckTriggerTimeout(int symbolIndex)
 {
+   SymbolOBRData &data = symbolDataArray[symbolIndex];
+   
    datetime currentTime = TimeCurrent();
-   int barsSincePullback = Bars(_Symbol, PERIOD_M5, pullbackBarTime, currentTime);
+   int barsSincePullback = Bars(data.symbol, PERIOD_M5, data.pullbackBarTime, currentTime);
    
    // Allow same timeout as pullback (generous)
    if(barsSincePullback > PullbackMaxBars)
    {
       if(EnableLogging)
-         Print("TIMEOUT: ", barsSincePullback, " bars since pullback (max: ", PullbackMaxBars, ")");
+         Print("TIMEOUT [", data.symbol, "]: ", barsSincePullback, " bars since pullback (max: ", PullbackMaxBars, ")");
       return true;
    }
    
@@ -579,49 +719,51 @@ bool CheckTriggerTimeout()
 //+------------------------------------------------------------------+
 //| Execute trade                                                    |
 //+------------------------------------------------------------------+
-void ExecuteTrade()
+void ExecuteTrade(int symbolIndex)
 {
+   SymbolOBRData &data = symbolDataArray[symbolIndex];
+   
    // Calculate position size based on risk
    double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    double riskAmount = accountBalance * (RiskPercent / 100.0);
    
    // Calculate stop loss
    double stopLoss;
-   if(triggerType == ORDER_TYPE_BUY)
-      stopLoss = impulseLow;  // SL below impulse low
+   if(data.triggerType == ORDER_TYPE_BUY)
+      stopLoss = data.impulseLow;  // SL below impulse low
    else
-      stopLoss = impulseHigh;  // SL above impulse high
+      stopLoss = data.impulseHigh;  // SL above impulse high
    
    // Calculate take profit
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double slDistance = MathAbs(triggerLevel - stopLoss);
+   double point = SymbolInfoDouble(data.symbol, SYMBOL_POINT);
+   double slDistance = MathAbs(data.triggerLevel - stopLoss);
    double tpDistance = slDistance * RewardRiskRatio;
    
    double takeProfit;
-   if(triggerType == ORDER_TYPE_BUY)
-      takeProfit = triggerLevel + tpDistance;
+   if(data.triggerType == ORDER_TYPE_BUY)
+      takeProfit = data.triggerLevel + tpDistance;
    else
-      takeProfit = triggerLevel - tpDistance;
+      takeProfit = data.triggerLevel - tpDistance;
    
    // Calculate lot size
-   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(data.symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize = SymbolInfoDouble(data.symbol, SYMBOL_TRADE_TICK_SIZE);
    double slPoints = slDistance / point;
    
    // Validate values before calculation
    if(tickSize <= 0 || slPoints <= 0)
    {
       if(EnableLogging)
-         Print("ERROR: Invalid tickSize (", tickSize, ") or slPoints (", slPoints, ")");
+         Print("ERROR [", data.symbol, "]: Invalid tickSize (", tickSize, ") or slPoints (", slPoints, ")");
       return;
    }
    
    double lotSize = riskAmount / (slPoints * tickValue / tickSize);
    
    // Normalize lot size
-   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
-   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(data.symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(data.symbol, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(data.symbol, SYMBOL_VOLUME_STEP);
    lotSize = MathFloor(lotSize / lotStep) * lotStep;
    lotSize = MathMax(minLot, MathMin(maxLot, lotSize));
    
@@ -630,31 +772,31 @@ void ExecuteTrade()
    MqlTradeResult result = {};
    
    request.action = TRADE_ACTION_DEAL;
-   request.symbol = _Symbol;
+   request.symbol = data.symbol;
    request.volume = lotSize;
-   request.type = triggerType;
-   request.price = (triggerType == ORDER_TYPE_BUY) ? 
-                   SymbolInfoDouble(_Symbol, SYMBOL_ASK) : 
-                   SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   request.type = data.triggerType;
+   request.price = (data.triggerType == ORDER_TYPE_BUY) ? 
+                   SymbolInfoDouble(data.symbol, SYMBOL_ASK) : 
+                   SymbolInfoDouble(data.symbol, SYMBOL_BID);
    request.sl = stopLoss;
    request.tp = takeProfit;
    request.deviation = 10;
    request.magic = MagicNumber;
-   request.comment = "OBR_" + (triggerType == ORDER_TYPE_BUY ? "BUY" : "SELL");
+   request.comment = "OBR_" + (data.triggerType == ORDER_TYPE_BUY ? "BUY" : "SELL");
    
    // Send order
    if(OrderSend(request, result))
    {
       if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
       {
-         tradeExecutedToday = true;
-         lastTradeDate = iTime(_Symbol, PERIOD_D1, 0);
+         data.tradeExecutedToday = true;
+         data.lastTradeDate = iTime(data.symbol, PERIOD_D1, 0);
          
          if(EnableLogging)
          {
             Print("========================================");
-            Print("✅ TRADE EXECUTED!");
-            Print("  Type: ", (triggerType == ORDER_TYPE_BUY ? "BUY" : "SELL"));
+            Print("✅ TRADE EXECUTED [", data.symbol, "]!");
+            Print("  Type: ", (data.triggerType == ORDER_TYPE_BUY ? "BUY" : "SELL"));
             Print("  Price: ", DoubleToString(request.price, _Digits));
             Print("  Lot size: ", DoubleToString(lotSize, 2));
             Print("  Stop loss: ", DoubleToString(stopLoss, _Digits));
@@ -665,8 +807,8 @@ void ExecuteTrade()
          }
          
          // Send success notification
-         string tradeType = (triggerType == ORDER_TYPE_BUY ? "BUY" : "SELL");
-         SendNotificationAlert("✅ TRADE EXECUTED - " + tradeType + 
+         string tradeType = (data.triggerType == ORDER_TYPE_BUY ? "BUY" : "SELL");
+         SendNotificationAlert("✅ TRADE EXECUTED [" + data.symbol + "] - " + tradeType + 
                              " | Price: " + DoubleToString(request.price, _Digits) + 
                              " | Lot: " + DoubleToString(lotSize, 2) + 
                              " | SL: " + DoubleToString(stopLoss, _Digits) + 
@@ -675,29 +817,30 @@ void ExecuteTrade()
       else
       {
          if(EnableLogging)
-            Print("ERROR: Order failed - ", result.comment, " (", result.retcode, ")");
+            Print("ERROR [", data.symbol, "]: Order failed - ", result.comment, " (", result.retcode, ")");
          
          // Send error notification
-         SendNotificationAlert("❌ TRADE FAILED - " + result.comment + " (Code: " + 
+         SendNotificationAlert("❌ TRADE FAILED [" + data.symbol + "] - " + result.comment + " (Code: " + 
                              IntegerToString(result.retcode) + ")");
       }
    }
    else
    {
       if(EnableLogging)
-         Print("ERROR: OrderSend failed - ", GetLastError());
+         Print("ERROR [", data.symbol, "]: OrderSend failed - ", GetLastError());
       
       // Send error notification
-      SendNotificationAlert("❌ ORDER SEND FAILED - Error: " + IntegerToString(GetLastError()));
+      SendNotificationAlert("❌ ORDER SEND FAILED [" + data.symbol + "] - Error: " + IntegerToString(GetLastError()));
    }
 }
 
 //+------------------------------------------------------------------+
 //| Mark impulse candle on chart                                    |
 //+------------------------------------------------------------------+
-void MarkImpulseCandle()
+void MarkImpulseCandle(int symbolIndex)
 {
-   string objName = "Impulse_" + TimeToString(impulseBarTime);
+   SymbolOBRData &data = symbolDataArray[symbolIndex];
+   string objName = "Impulse_" + data.symbol + "_" + TimeToString(data.impulseBarTime);
    
    // Delete if exists
    if(ObjectFind(0, objName) >= 0)
@@ -705,11 +848,11 @@ void MarkImpulseCandle()
    
    // Create rectangle
    ObjectCreate(0, objName, OBJ_RECTANGLE, 0, 
-                impulseBarTime, impulseHigh,
-                impulseBarTime + PeriodSeconds(PERIOD_M5), impulseLow);
+                data.impulseBarTime, data.impulseHigh,
+                data.impulseBarTime + PeriodSeconds(PERIOD_M5), data.impulseLow);
    
    // Set properties
-   ObjectSetInteger(0, objName, OBJPROP_COLOR, (impulseDirection == 1 ? clrLimeGreen : clrRed));
+   ObjectSetInteger(0, objName, OBJPROP_COLOR, (data.impulseDirection == 1 ? clrLimeGreen : clrRed));
    ObjectSetInteger(0, objName, OBJPROP_STYLE, STYLE_SOLID);
    ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
    ObjectSetInteger(0, objName, OBJPROP_BACK, true);
@@ -720,8 +863,8 @@ void MarkImpulseCandle()
    if(ObjectFind(0, labelName) >= 0)
       ObjectDelete(0, labelName);
    
-   ObjectCreate(0, labelName, OBJ_TEXT, 0, impulseBarTime, impulseHigh);
-   ObjectSetString(0, labelName, OBJPROP_TEXT, "OB " + (impulseDirection == 1 ? "↑" : "↓"));
+   ObjectCreate(0, labelName, OBJ_TEXT, 0, data.impulseBarTime, data.impulseHigh);
+   ObjectSetString(0, labelName, OBJPROP_TEXT, "OB " + (data.impulseDirection == 1 ? "↑" : "↓"));
    ObjectSetInteger(0, labelName, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 10);
    ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, ANCHOR_BOTTOM);
