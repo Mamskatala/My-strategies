@@ -17,7 +17,7 @@ input bool   TradeBullish = true;            // Allow bullish trades
 input bool   TradeBearish = true;            // Allow bearish trades
 
 input group "=== Impulse Candle Settings ==="
-input double ImpulseMinATRMult = 1.2;        // Min ATR multiplier (1.2 for M5 index trading)
+input double ImpulseMinATRMult = 0.85;       // Min ATR multiplier (0.85 for M5 index trading, relaxed for more trades)
 input double ImpulseMaxATRMult = 4.0;        // Max ATR multiplier (increased from 3.0)
 input double ImpulseBodyPercent = 50.0;      // Min body % (relaxed from 60%)
 input int    MaxSpreadPoints = 1500;          // Max spread in points (1500 for indices like NDAQ)
