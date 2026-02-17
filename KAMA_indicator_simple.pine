@@ -18,13 +18,13 @@ if bar_index == 0
     slowend := 2.0 / (slow + 1)
 else
     // Calculate efficiency ratio
-    signal = math.abs(close - close[period])
-    noise = math.sum(math.abs(close - close[1]), period)
+    float signal = math.abs(close - close[period])
+    float noise = math.sum(math.abs(close - close[1]), period)
     
-    efratio = noise != 0 ? signal / noise : 1.0
+    float efratio = noise != 0 ? signal / noise : 1.0
     
     // Calculate smooth constant
-    smooth = math.pow(efratio * (fastend - slowend) + slowend, 2)
+    float smooth = math.pow(efratio * (fastend - slowend) + slowend, 2)
     
     // Calculate KAMA
     kama := kama[1] + smooth * (close - kama[1])

@@ -20,8 +20,8 @@ if bar_index == 0
     slowend := 2.0 / (slow + 1)
 else
     // Calculate efficiency ratio
-    signal = math.abs(close - close[period])
-    noise = math.sum(math.abs(close - close[1]), period)
+    float signal = math.abs(close - close[period])
+    float noise = math.sum(math.abs(close - close[1]), period)
     
     efratio := noise != 0 ? signal / noise : 1.0
     
@@ -35,7 +35,7 @@ else
 plot(kama, "KAMA", color=color.blue, linewidth=2)
 
 // Optional: Calculate and display MA period equivalent
-ma_period = 2.0 / smooth - 1
+float ma_period = 2.0 / smooth - 1
 
 // Optional: Add table to display current values
 var table infoTable = table.new(position.top_right, 3, 4, border_width=1)
