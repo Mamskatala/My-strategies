@@ -12,6 +12,7 @@
 input group "=== Trading Hours ==="
 input int    EntryHour = 16;                 // Entry hour (start of session)
 input int    EntryMinute = 30;               // Entry minute
+input int    EndHour = 22;                   // End hour (end of session)
 input bool   TradeBullish = true;            // Allow bullish trades
 input bool   TradeBearish = true;            // Allow bearish trades
 
@@ -33,6 +34,7 @@ input group "=== Risk Management ==="
 input double RiskPercent = 1.0;              // Risk per trade (%)
 input double RewardRiskRatio = 2.0;          // Reward:Risk ratio
 input int    MaxDailyTrades = 1;             // Max trades per day
+input int    MagicNumber = 12345;            // Magic number for orders
 
 input group "=== Indicator Settings ==="
 input int    ATRPeriod = 14;                 // ATR period
@@ -65,6 +67,7 @@ int impulseDirection = 0;  // 1 = bullish, -1 = bearish
 bool pullbackDetected = false;
 int pullbackBarIndex = 0;
 double pullbackPrice = 0;
+datetime pullbackBarTime = 0;
 
 // Trigger tracking
 double triggerLevel = 0;
@@ -90,8 +93,8 @@ int OnInit()
    Print("EA_ImpulseZigZag initialized successfully");
    Print("Symbol: ", _Symbol);
    Print("Timeframe: M5");
-   Print("Entry window: ", EntryHour, ":", (EntryMinute < 10 ? "0" : ""), EntryMinute, " - 22:00");
-   Print("Session duration: ", (22 - EntryHour), " hours");
+   Print("Entry window: ", EntryHour, ":", (EntryMinute < 10 ? "0" : ""), EntryMinute, " - ", EndHour, ":00");
+   Print("Session duration: ", (EndHour - EntryHour), " hours");
    Print("========================================");
    
    return INIT_SUCCEEDED;
@@ -132,10 +135,8 @@ void OnTick()
    TimeToStruct(TimeCurrent(), dt_now);
    
    // Reset daily trade flag at start of new day
-   datetime currentDate = StringToTime(IntegerToString(dt_now.year) + "." + 
-                                       IntegerToString(dt_now.mon) + "." + 
-                                       IntegerToString(dt_now.day));
-   if(currentDate != lastTradeDate)
+   datetime currentDate = iTime(_Symbol, PERIOD_D1, 0);
+   if(currentDate != lastTradeDate && lastTradeDate != 0)
    {
       tradeExecutedToday = false;
       obrState = WAITING_IMPULSE;
@@ -143,12 +144,15 @@ void OnTick()
          Print("=== NEW TRADING DAY: ", TimeToString(currentDate, TIME_DATE), " ===");
    }
    
-   // Check if we're in entry window (16:30 - 22:00)
-   bool isEntryTime = (dt_now.hour >= EntryHour && dt_now.hour < 22);
+   // Check if we're in entry window
+   bool isEntryTime = (dt_now.hour >= EntryHour && dt_now.hour < EndHour);
    
    // Debug output
-   if(EnableLogging && dt_now.min % 15 == 0 && dt_now.sec == 0)  // Log every 15 min
+   static datetime lastDebugTime = 0;
+   datetime currentMinute = iTime(_Symbol, PERIOD_M15, 0);
+   if(EnableLogging && currentMinute != lastDebugTime)  // Log every 15 min
    {
+      lastDebugTime = currentMinute;
       Print("DEBUG [", TimeToString(TimeCurrent()), "]");
       Print("  State: ", EnumToString(obrState));
       Print("  Entry window: ", (isEntryTime ? "OPEN" : "CLOSED"));
@@ -379,6 +383,7 @@ bool DetectPullback()
             pullbackDetected = true;
             pullbackBarIndex = i;
             pullbackPrice = close_i;
+            pullbackBarTime = iTime(_Symbol, PERIOD_M5, i);
             
             if(EnableLogging)
             {
@@ -402,6 +407,7 @@ bool DetectPullback()
             pullbackDetected = true;
             pullbackBarIndex = i;
             pullbackPrice = close_i;
+            pullbackBarTime = iTime(_Symbol, PERIOD_M5, i);
             
             if(EnableLogging)
             {
@@ -509,7 +515,7 @@ bool CheckTrigger()
 bool CheckTriggerTimeout()
 {
    datetime currentTime = TimeCurrent();
-   int barsSincePullback = Bars(_Symbol, PERIOD_M5, iTime(_Symbol, PERIOD_M5, pullbackBarIndex), currentTime);
+   int barsSincePullback = Bars(_Symbol, PERIOD_M5, pullbackBarTime, currentTime);
    
    // Allow same timeout as pullback (generous)
    if(barsSincePullback > PullbackMaxBars)
@@ -553,6 +559,15 @@ void ExecuteTrade()
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    double slPoints = slDistance / point;
+   
+   // Validate values before calculation
+   if(tickSize <= 0 || slPoints <= 0)
+   {
+      if(EnableLogging)
+         Print("ERROR: Invalid tickSize (", tickSize, ") or slPoints (", slPoints, ")");
+      return;
+   }
+   
    double lotSize = riskAmount / (slPoints * tickValue / tickSize);
    
    // Normalize lot size
@@ -576,7 +591,7 @@ void ExecuteTrade()
    request.sl = stopLoss;
    request.tp = takeProfit;
    request.deviation = 10;
-   request.magic = 12345;
+   request.magic = MagicNumber;
    request.comment = "OBR_" + (triggerType == ORDER_TYPE_BUY ? "BUY" : "SELL");
    
    // Send order
@@ -585,9 +600,7 @@ void ExecuteTrade()
       if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
       {
          tradeExecutedToday = true;
-         lastTradeDate = StringToTime(IntegerToString(TimeYear(TimeCurrent())) + "." + 
-                                      IntegerToString(TimeMonth(TimeCurrent())) + "." + 
-                                      IntegerToString(TimeDay(TimeCurrent())));
+         lastTradeDate = iTime(_Symbol, PERIOD_D1, 0);
          
          if(EnableLogging)
          {
