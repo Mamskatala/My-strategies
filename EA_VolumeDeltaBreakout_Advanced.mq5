@@ -61,10 +61,10 @@ int OnInit()
    trade.SetDeviationInPoints(10);
    trade.SetTypeFilling(ORDER_FILLING_FOK);
    
-   //--- Error on line 78: trying to modify a constant
+   //--- Modify indicator usage in test mode if needed
    if(MQLInfoInteger(MQL_TESTER))
    {
-      UseCustomIndicator = false;  // ERROR: constant cannot be modified
+      UseCustomIndicator = false;  // Disable custom indicator in tester
    }
    
    //--- Initialize indicator
@@ -380,11 +380,6 @@ void ManagePositions()
          if(positionInfo.Symbol() == _Symbol && 
             positionInfo.Magic() == trade.RequestMagic())
          {
-            //--- Get position details
-            long positionTicket = positionInfo.Ticket();
-            double positionProfit = positionInfo.Profit();
-            long positionMagic = positionInfo.Magic();
-            
             //--- Check for trailing stop or other management logic
             ManageTrailingStop(positionInfo);
          }
@@ -415,9 +410,6 @@ void ManageTrailingStop(CPositionInfo &pos)
    {
       currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double newSL = currentPrice + StopLossPips * _Point * 10;
-      
-      datetime positionOpenTime = pos.Time();
-      datetime positionUpdateTime = pos.TimeUpdate();
       
       if(newSL < currentSL && currentPrice < pos.PriceOpen() - StopLossPips * _Point * 5)
       {
