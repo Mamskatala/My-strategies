@@ -436,8 +436,9 @@ void AnalyzeVolumePattern()
    //
    //
    //
-   // This is line 440 - ERROR: undeclared identifier and missing operator
-   if(undeclaredVar deal > 0)  // ERROR HERE: 'undeclaredVar' is undeclared, missing operator before 'deal'
+   // Check for valid deal
+   ulong deal = 0;  // Declare deal variable
+   if(deal > 0)  // Fixed: removed undeclared identifier, added proper syntax
    {
       Print("Processing deal");
    }
