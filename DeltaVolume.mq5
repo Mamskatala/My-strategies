@@ -38,8 +38,6 @@ double ZeroBuffer[];
 
 //--- input parameters
 input int    ResetPeriod = 0;        // Reset Cumulative Delta (0=never, 1=daily, 2=weekly)
-input color  DeltaColorPositive = clrLimeGreen;
-input color  DeltaColorNegative = clrRed;
 
 //+------------------------------------------------------------------+
 //| Custom indicator initialization function                         |
