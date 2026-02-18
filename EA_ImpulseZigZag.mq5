@@ -846,8 +846,8 @@ bool DetectImpulseCandle(int symbolIndex)
    }
    
    // Send notification
-   string direction = (symbolDataArray[symbolIndex].impulseDirection == 1 ? "BULLISH" : "BEARISH");
-   SendNotificationAlert("🎯 Impulse Candle Detected [" + symbolDataArray[symbolIndex].symbol + "] - " + direction +  " | Range: " + DoubleToString(symbolDataArray[symbolIndex].impulseRange, _Digits));
+   string directionText = (symbolDataArray[symbolIndex].impulseDirection == 1 ? "BULLISH" : "BEARISH");
+   SendNotificationAlert("🎯 Impulse Candle Detected [" + symbolDataArray[symbolIndex].symbol + "] - " + directionText +  " | Range: " + DoubleToString(symbolDataArray[symbolIndex].impulseRange, _Digits));
    
    // Draw visual marker
    if(EnableVisualMarkers)
