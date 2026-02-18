@@ -104,8 +104,10 @@ Since true order flow data is not available on MT5 for most instruments, the ind
 
 ### Visualization
 The indicator displays three elements in a separate window:
-1. **Blue Histogram**: Delta values for each bar
-2. **Red Line**: Cumulative Delta
+1. **Color-Coded Histogram**: Delta values for each bar
+   - Green bars = Positive delta (buying pressure)
+   - Red bars = Negative delta (selling pressure)
+2. **Blue Line**: Cumulative Delta (trend indicator)
 3. **Gray Dotted Line**: Zero reference line
 
 ## Usage Instructions

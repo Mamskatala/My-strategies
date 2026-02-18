@@ -7,20 +7,20 @@
 #property link      ""
 #property version   "1.00"
 #property indicator_separate_window
-#property indicator_buffers 3
+#property indicator_buffers 4
 #property indicator_plots   3
 
 //--- plot Delta
 #property indicator_label1  "Delta"
-#property indicator_type1   DRAW_HISTOGRAM
-#property indicator_color1  clrDodgerBlue
+#property indicator_type1   DRAW_COLOR_HISTOGRAM
+#property indicator_color1  clrLimeGreen,clrRed
 #property indicator_style1  STYLE_SOLID
-#property indicator_width1  2
+#property indicator_width1  3
 
 //--- plot Cumulative Delta
 #property indicator_label2  "Cumulative Delta"
 #property indicator_type2   DRAW_LINE
-#property indicator_color2  clrRed
+#property indicator_color2  clrDodgerBlue
 #property indicator_style2  STYLE_SOLID
 #property indicator_width2  2
 
@@ -33,6 +33,7 @@
 
 //--- indicator buffers
 double DeltaBuffer[];
+double DeltaColorBuffer[];
 double CumulativeDeltaBuffer[];
 double ZeroBuffer[];
 
@@ -46,8 +47,15 @@ int OnInit()
 {
    //--- indicator buffers mapping
    SetIndexBuffer(0, DeltaBuffer, INDICATOR_DATA);
-   SetIndexBuffer(1, CumulativeDeltaBuffer, INDICATOR_DATA);
-   SetIndexBuffer(2, ZeroBuffer, INDICATOR_DATA);
+   SetIndexBuffer(1, DeltaColorBuffer, INDICATOR_COLOR_INDEX);
+   SetIndexBuffer(2, CumulativeDeltaBuffer, INDICATOR_DATA);
+   SetIndexBuffer(3, ZeroBuffer, INDICATOR_DATA);
+   
+   //--- set arrays as time series (standard for MT5 indicators)
+   ArraySetAsSeries(DeltaBuffer, true);
+   ArraySetAsSeries(DeltaColorBuffer, true);
+   ArraySetAsSeries(CumulativeDeltaBuffer, true);
+   ArraySetAsSeries(ZeroBuffer, true);
    
    //--- set index labels
    PlotIndexSetString(0, PLOT_LABEL, "Delta");
@@ -80,14 +88,33 @@ int OnCalculate(const int rates_total,
    //--- check for bars count
    if(rates_total < 2)
       return 0;
-      
-   //--- starting position for calculation
-   int start_pos = prev_calculated - 1;
-   if(start_pos < 0)
-      start_pos = 0;
    
-   //--- main calculation loop
-   for(int i = start_pos; i < rates_total; i++)
+   //--- set arrays as series
+   ArraySetAsSeries(time, true);
+   ArraySetAsSeries(open, true);
+   ArraySetAsSeries(high, true);
+   ArraySetAsSeries(low, true);
+   ArraySetAsSeries(close, true);
+   ArraySetAsSeries(tick_volume, true);
+      
+   //--- determine how many bars to calculate
+   int limit;
+   if(prev_calculated == 0)
+   {
+      limit = rates_total - 1;
+      // Initialize all buffers
+      ArrayInitialize(DeltaBuffer, 0);
+      ArrayInitialize(DeltaColorBuffer, 0);
+      ArrayInitialize(CumulativeDeltaBuffer, 0);
+      ArrayInitialize(ZeroBuffer, 0);
+   }
+   else
+   {
+      limit = rates_total - prev_calculated;
+   }
+   
+   //--- main calculation loop (from oldest to newest with time series)
+   for(int i = limit; i >= 0; i--)
    {
       //--- Calculate Delta (approximation based on price action)
       // If close > open: bullish bar, delta is positive
@@ -100,15 +127,29 @@ int OnCalculate(const int rates_total,
       {
          // Bullish bar - assume buying pressure
          double range = high[i] - low[i];
-         double close_position = (close[i] - low[i]) / (range > 0 ? range : 1);
-         delta = tick_volume[i] * close_position;
+         if(range > 0)
+         {
+            double close_position = (close[i] - low[i]) / range;
+            delta = tick_volume[i] * close_position;
+         }
+         else
+         {
+            delta = tick_volume[i] * 0.5; // Neutral if no range
+         }
       }
       else if(close[i] < open[i])
       {
          // Bearish bar - assume selling pressure
          double range = high[i] - low[i];
-         double close_position = (high[i] - close[i]) / (range > 0 ? range : 1);
-         delta = -tick_volume[i] * close_position;
+         if(range > 0)
+         {
+            double close_position = (high[i] - close[i]) / range;
+            delta = -tick_volume[i] * close_position;
+         }
+         else
+         {
+            delta = -tick_volume[i] * 0.5; // Neutral if no range
+         }
       }
       else
       {
@@ -118,8 +159,15 @@ int OnCalculate(const int rates_total,
       
       DeltaBuffer[i] = delta;
       
+      //--- Set color based on delta value
+      // 0 = first color (green for positive), 1 = second color (red for negative)
+      if(delta >= 0)
+         DeltaColorBuffer[i] = 0; // Green
+      else
+         DeltaColorBuffer[i] = 1; // Red
+      
       //--- Calculate Cumulative Delta
-      if(i == 0)
+      if(i == rates_total - 1) // Oldest bar
       {
          CumulativeDeltaBuffer[i] = delta;
       }
@@ -132,7 +180,7 @@ int OnCalculate(const int rates_total,
          {
             MqlDateTime dt_current, dt_prev;
             TimeToStruct(time[i], dt_current);
-            TimeToStruct(time[i-1], dt_prev);
+            TimeToStruct(time[i+1], dt_prev); // Previous bar in time series
             if(dt_current.day != dt_prev.day)
                shouldReset = true;
          }
@@ -140,7 +188,7 @@ int OnCalculate(const int rates_total,
          {
             MqlDateTime dt_current, dt_prev;
             TimeToStruct(time[i], dt_current);
-            TimeToStruct(time[i-1], dt_prev);
+            TimeToStruct(time[i+1], dt_prev);
             if(dt_current.day_of_week < dt_prev.day_of_week)
                shouldReset = true;
          }
@@ -148,7 +196,7 @@ int OnCalculate(const int rates_total,
          if(shouldReset)
             CumulativeDeltaBuffer[i] = delta;
          else
-            CumulativeDeltaBuffer[i] = CumulativeDeltaBuffer[i-1] + delta;
+            CumulativeDeltaBuffer[i] = CumulativeDeltaBuffer[i+1] + delta; // Add to previous
       }
       
       //--- Zero line

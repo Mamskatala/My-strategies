@@ -119,8 +119,10 @@ SessionEndMinute = 0
 
 ### Affichage
 L'indicateur affiche dans une fenêtre séparée :
-1. **Histogramme Bleu** : Valeurs Delta pour chaque barre
-2. **Ligne Rouge** : Delta Cumulatif
+1. **Histogramme en Couleurs** : Valeurs Delta pour chaque barre
+   - Barres vertes = Delta positif (pression acheteuse)
+   - Barres rouges = Delta négatif (pression vendeuse)
+2. **Ligne Bleue** : Delta Cumulatif (indicateur de tendance)
 3. **Ligne Grise Pointillée** : Ligne zéro de référence
 
 ### Interprétation
