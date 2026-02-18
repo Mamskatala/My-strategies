@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Custom Delta Volume Indicator"
 #property link      ""
-#property version   "1.00"
+#property version   "1.02"
 #property indicator_separate_window
 #property indicator_buffers 4
 #property indicator_plots   3
@@ -46,9 +46,14 @@ input int    ResetPeriod = 0;        // Reset Cumulative Delta (0=never, 1=daily
 int OnInit()
 {
    //--- indicator buffers mapping
+   // Plot 0: Delta histogram (uses buffer 0 for data, buffer 1 for colors)
    SetIndexBuffer(0, DeltaBuffer, INDICATOR_DATA);
    SetIndexBuffer(1, DeltaColorBuffer, INDICATOR_COLOR_INDEX);
+   
+   // Plot 1: Cumulative Delta line
    SetIndexBuffer(2, CumulativeDeltaBuffer, INDICATOR_DATA);
+   
+   // Plot 2: Zero line
    SetIndexBuffer(3, ZeroBuffer, INDICATOR_DATA);
    
    //--- set arrays as time series (standard for MT5 indicators)
@@ -57,10 +62,20 @@ int OnInit()
    ArraySetAsSeries(CumulativeDeltaBuffer, true);
    ArraySetAsSeries(ZeroBuffer, true);
    
+   //--- set empty value for proper display
+   PlotIndexSetDouble(0, PLOT_EMPTY_VALUE, 0.0);
+   PlotIndexSetDouble(1, PLOT_EMPTY_VALUE, 0.0);
+   PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, 0.0);
+   
    //--- set index labels
    PlotIndexSetString(0, PLOT_LABEL, "Delta");
    PlotIndexSetString(1, PLOT_LABEL, "Cumulative Delta");
    PlotIndexSetString(2, PLOT_LABEL, "Zero");
+   
+   //--- set first bar index (start drawing from bar 1 to avoid issues)
+   PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, 1);
+   PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, 1);
+   PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, 0);
    
    //--- set indicator digits
    IndicatorSetInteger(INDICATOR_DIGITS, 0);
@@ -102,11 +117,14 @@ int OnCalculate(const int rates_total,
    if(prev_calculated == 0)
    {
       limit = rates_total - 1;
-      // Initialize all buffers
-      ArrayInitialize(DeltaBuffer, 0);
-      ArrayInitialize(DeltaColorBuffer, 0);
-      ArrayInitialize(CumulativeDeltaBuffer, 0);
-      ArrayInitialize(ZeroBuffer, 0);
+      // Initialize all buffers with zero (not EMPTY_VALUE for histograms)
+      for(int i = 0; i < rates_total; i++)
+      {
+         DeltaBuffer[i] = 0.0;
+         DeltaColorBuffer[i] = 0;
+         CumulativeDeltaBuffer[i] = 0.0;
+         ZeroBuffer[i] = 0.0;
+      }
    }
    else
    {
