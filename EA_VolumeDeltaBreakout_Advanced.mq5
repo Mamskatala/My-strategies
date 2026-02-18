@@ -78,9 +78,8 @@ void OnTick()
    if(!IsNewBar())
       return;
    
-   // Error on line 78 - trying to modify a constant
+   // Use custom indicator flag
    const bool UseCustomIndicator = true;
-   UseCustomIndicator = false;  // ERROR: constant cannot be modified
    
    // Calculate volume delta
    double volumeDelta = CalculateVolumeDelta();
@@ -322,10 +321,10 @@ void AnalyzeVolume()
          totalRealVolume += realVolume[i];
       }
       
-      // WARNING: Type conversion from 'long' to 'double' on line 404
-      double avgTickVolume = totalTickVolume / 100.0;
-      // WARNING: Type conversion from 'long' to 'double' on line 406
-      double avgRealVolume = totalRealVolume / 100.0;
+      // Explicitly cast long to double to avoid type conversion warning
+      double avgTickVolume = (double)totalTickVolume / 100.0;
+      // Explicitly cast long to double to avoid type conversion warning
+      double avgRealVolume = (double)totalRealVolume / 100.0;
       
       Print("Average Tick Volume: ", avgTickVolume);
       Print("Average Real Volume: ", avgRealVolume);
@@ -361,11 +360,11 @@ double CalculateVWAP()
    if(totalVolume == 0)
       return 0.0;
    
-   // WARNING: Type conversion from 'long' to 'double' on line 445
-   double vwap = totalPriceVolume / totalVolume;
+   // Explicitly cast long to double to avoid type conversion warning
+   double vwap = totalPriceVolume / (double)totalVolume;
    
-   // WARNING: Type conversion from 'long' to 'double' on line 447
-   double volumeRatio = totalVolume / VolumePeriod;
+   // Explicitly cast long to double to avoid type conversion warning
+   double volumeRatio = (double)totalVolume / VolumePeriod;
    
    return vwap;
 }
