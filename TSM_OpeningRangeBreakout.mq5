@@ -263,14 +263,17 @@ void CheckBreakoutSignals()
    double point = symbolInfo.Point();
    int digits = (int)symbolInfo.Digits();
    
+   //--- Calculate pip value once
+   double pipValue = point * 10;
+   
    //--- Calculate breakout levels
-   double longEntry = g_openingRange.high + InpBreakoutPips * point * 10;
-   double shortEntry = g_openingRange.low - InpBreakoutPips * point * 10;
+   double longEntry = g_openingRange.high + InpBreakoutPips * pipValue;
+   double shortEntry = g_openingRange.low - InpBreakoutPips * pipValue;
    
    //--- Check for long breakout
    if(!g_openingRange.longTriggered && ask > longEntry)
    {
-      if(!InpTradeOnlyFirstBreak || (!g_openingRange.longTriggered && !g_openingRange.shortTriggered))
+      if(!InpTradeOnlyFirstBreak || !g_openingRange.shortTriggered)
       {
          if(!HasPosition(POSITION_TYPE_BUY))
          {
@@ -283,7 +286,7 @@ void CheckBreakoutSignals()
    //--- Check for short breakout
    if(!g_openingRange.shortTriggered && bid < shortEntry)
    {
-      if(!InpTradeOnlyFirstBreak || (!g_openingRange.longTriggered && !g_openingRange.shortTriggered))
+      if(!InpTradeOnlyFirstBreak || !g_openingRange.longTriggered)
       {
          if(!HasPosition(POSITION_TYPE_SELL))
          {
@@ -308,6 +311,7 @@ void OpenPosition(ENUM_ORDER_TYPE orderType)
    double bid = symbolInfo.Bid();
    double ask = symbolInfo.Ask();
    double point = symbolInfo.Point();
+   double pipValue = point * 10;
    
    //--- Calculate dynamic lot size if enabled
    if(InpUseDynamicLots)
@@ -332,12 +336,12 @@ void OpenPosition(ENUM_ORDER_TYPE orderType)
       }
       else
       {
-         sl = price - InpStopLossPips * point * 10;
+         sl = price - InpStopLossPips * pipValue;
       }
       
       if(InpTakeProfitPips > 0)
       {
-         tp = price + InpTakeProfitPips * point * 10;
+         tp = price + InpTakeProfitPips * pipValue;
       }
    }
    else // ORDER_TYPE_SELL
@@ -350,12 +354,12 @@ void OpenPosition(ENUM_ORDER_TYPE orderType)
       }
       else
       {
-         sl = price + InpStopLossPips * point * 10;
+         sl = price + InpStopLossPips * pipValue;
       }
       
       if(InpTakeProfitPips > 0)
       {
-         tp = price - InpTakeProfitPips * point * 10;
+         tp = price - InpTakeProfitPips * pipValue;
       }
    }
    
@@ -421,6 +425,7 @@ double CalculateLotSize(ENUM_ORDER_TYPE orderType)
    
    double slDistance = 0.0;
    double point = symbolInfo.Point();
+   double pipValue = point * 10;
    
    if(InpUseRangeStops)
    {
@@ -428,7 +433,7 @@ double CalculateLotSize(ENUM_ORDER_TYPE orderType)
    }
    else
    {
-      slDistance = InpStopLossPips * point * 10;
+      slDistance = InpStopLossPips * pipValue;
    }
    
    if(slDistance > 0)
