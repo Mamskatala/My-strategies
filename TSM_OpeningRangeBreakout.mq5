@@ -488,8 +488,6 @@ void CheckBreakout(int idx)
 
    // Bullish breakout: close above opening range high
    double close0 = iClose(symbolDataArray[idx].symbol, PERIOD_M5, 1);
-   double high0  = iHigh(symbolDataArray[idx].symbol, PERIOD_M5, 1);
-   double low0   = iLow(symbolDataArray[idx].symbol, PERIOD_M5, 1);
 
    if(TradeBullish && close0 > (symbolDataArray[idx].rangeHigh + bufferValue))
    {
@@ -539,7 +537,6 @@ void ExecuteBreakoutTrade(int idx, ENUM_ORDER_TYPE orderType)
    double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    double riskAmount     = accountBalance * (RiskPercent / 100.0);
    double point          = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_POINT);
-   double rangeSize      = symbolDataArray[idx].rangeHigh - symbolDataArray[idx].rangeLow;
 
    // Entry price
    double entryPrice;
@@ -569,10 +566,10 @@ void ExecuteBreakoutTrade(int idx, ENUM_ORDER_TYPE orderType)
    double tickValue = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_TRADE_TICK_SIZE);
 
-   if(tickSize <= 0 || point <= 0)
+   if(tickSize <= 0 || point <= 0 || tickValue <= 0)
    {
       if(EnableLogging)
-         Print("ERROR [", symbolDataArray[idx].symbol, "]: Invalid tickSize or point");
+         Print("ERROR [", symbolDataArray[idx].symbol, "]: Invalid tickSize, tickValue, or point");
       return;
    }
 
@@ -602,9 +599,9 @@ void ExecuteBreakoutTrade(int idx, ENUM_ORDER_TYPE orderType)
 
    bool result;
    if(orderType == ORDER_TYPE_BUY)
-      result = trade.Buy(lotSize, symbolDataArray[idx].symbol, entryPrice, stopLoss, takeProfit, comment);
+      result = trade.Buy(lotSize, symbolDataArray[idx].symbol, 0, stopLoss, takeProfit, comment);
    else
-      result = trade.Sell(lotSize, symbolDataArray[idx].symbol, entryPrice, stopLoss, takeProfit, comment);
+      result = trade.Sell(lotSize, symbolDataArray[idx].symbol, 0, stopLoss, takeProfit, comment);
 
    if(result && (trade.ResultRetcode() == TRADE_RETCODE_DONE || trade.ResultRetcode() == TRADE_RETCODE_PLACED))
    {
