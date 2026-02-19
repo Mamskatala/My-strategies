@@ -82,12 +82,6 @@ public:
       //--- send to terminal
       Print(fullMessage);
       
-      //--- send push notification if enabled
-      if(TerminalInfoInteger(TERMINAL_NOTIFICATIONS_ENABLED))
-      {
-         SendNotification(fullMessage);
-      }
-      
       //--- send email if configured
       if(TerminalInfoInteger(TERMINAL_EMAIL_ENABLED))
       {
