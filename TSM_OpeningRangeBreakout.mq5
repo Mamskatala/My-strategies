@@ -683,8 +683,17 @@ void ClosePositionsForSymbol(int idx)
 
             if(OrderSend(request, result))
             {
-               if(EnableLogging)
-                  Print("CLOSED position [", symbolDataArray[idx].symbol, "] ticket: ", ticket);
+               if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
+               {
+                  if(EnableLogging)
+                     Print("CLOSED position [", symbolDataArray[idx].symbol, "] ticket: ", ticket);
+               }
+               else
+               {
+                  if(EnableLogging)
+                     Print("ERROR closing position [", symbolDataArray[idx].symbol,
+                           "] ticket: ", ticket, " retcode: ", result.retcode);
+               }
             }
             else
             {
