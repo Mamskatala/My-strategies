@@ -8,9 +8,6 @@
 #property version   "1.00"
 #property strict
 
-//--- Include necessary files
-#include <Trade\Trade.mqh>
-
 //--- Input parameters
 input group "=== Opening Range Settings ==="
 input int    ORBStartHour       = 9;          // Opening range start hour
@@ -78,9 +75,6 @@ struct SymbolORBData
    int               atrHandle;
    datetime          lastBarTime;
 };
-
-//--- Trade object
-CTrade trade;
 
 //--- Global variables
 SymbolORBData symbolDataArray[];
@@ -187,9 +181,6 @@ int OnInit()
       Print("ERROR: Failed to initialize symbols");
       return INIT_FAILED;
    }
-
-   trade.SetExpertMagicNumber(MagicNumber);
-   trade.SetDeviationInPoints(10);
 
    Print("========================================");
    Print("TSM Opening Range Breakout initialized");
@@ -595,50 +586,68 @@ void ExecuteBreakoutTrade(int idx, ENUM_ORDER_TYPE orderType)
 
    // Execute trade
    string comment = "ORB_" + (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL");
-   trade.SetExpertMagicNumber(MagicNumber);
 
-   bool result;
-   if(orderType == ORDER_TYPE_BUY)
-      result = trade.Buy(lotSize, symbolDataArray[idx].symbol, 0, stopLoss, takeProfit, comment);
-   else
-      result = trade.Sell(lotSize, symbolDataArray[idx].symbol, 0, stopLoss, takeProfit, comment);
+   MqlTradeRequest request = {};
+   MqlTradeResult  result  = {};
 
-   if(result && (trade.ResultRetcode() == TRADE_RETCODE_DONE || trade.ResultRetcode() == TRADE_RETCODE_PLACED))
+   request.action   = TRADE_ACTION_DEAL;
+   request.symbol   = symbolDataArray[idx].symbol;
+   request.volume   = lotSize;
+   request.type     = orderType;
+   request.price    = entryPrice;
+   request.sl       = stopLoss;
+   request.tp       = takeProfit;
+   request.deviation = 10;
+   request.magic    = MagicNumber;
+   request.comment  = comment;
+
+   if(OrderSend(request, result))
    {
-      symbolDataArray[idx].dailyTradeCount++;
-
-      if(EnableLogging)
+      if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
       {
-         Print("========================================");
-         Print("TRADE EXECUTED [", symbolDataArray[idx].symbol, "]!");
-         Print("  Type: ", (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"));
-         Print("  Price: ", DoubleToString(entryPrice, _Digits));
-         Print("  Lot size: ", DoubleToString(lotSize, 2));
-         Print("  Stop loss: ", DoubleToString(stopLoss, _Digits));
-         Print("  Take profit: ", DoubleToString(takeProfit, _Digits));
-         Print("  Risk: $", DoubleToString(riskAmount, 2));
-         Print("  R:R ratio: 1:", DoubleToString(RewardRiskRatio, 1));
-         Print("========================================");
+         symbolDataArray[idx].dailyTradeCount++;
+
+         if(EnableLogging)
+         {
+            Print("========================================");
+            Print("TRADE EXECUTED [", symbolDataArray[idx].symbol, "]!");
+            Print("  Type: ", (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"));
+            Print("  Price: ", DoubleToString(entryPrice, _Digits));
+            Print("  Lot size: ", DoubleToString(lotSize, 2));
+            Print("  Stop loss: ", DoubleToString(stopLoss, _Digits));
+            Print("  Take profit: ", DoubleToString(takeProfit, _Digits));
+            Print("  Risk: $", DoubleToString(riskAmount, 2));
+            Print("  R:R ratio: 1:", DoubleToString(RewardRiskRatio, 1));
+            Print("========================================");
+         }
+
+         string tradeType = (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL");
+         SendNotificationAlert("TRADE EXECUTED [" + symbolDataArray[idx].symbol + "] - " + tradeType +
+               " | Price: " + DoubleToString(entryPrice, _Digits) +
+               " | Lot: " + DoubleToString(lotSize, 2) +
+               " | SL: " + DoubleToString(stopLoss, _Digits) +
+               " | TP: " + DoubleToString(takeProfit, _Digits));
+
+         if(EnableVisualMarkers)
+            MarkBreakout(idx, orderType, entryPrice);
       }
+      else
+      {
+         if(EnableLogging)
+            Print("ERROR [", symbolDataArray[idx].symbol, "]: Order failed - ",
+                  result.comment, " (", result.retcode, ")");
 
-      string tradeType = (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL");
-      SendNotificationAlert("TRADE EXECUTED [" + symbolDataArray[idx].symbol + "] - " + tradeType +
-            " | Price: " + DoubleToString(entryPrice, _Digits) +
-            " | Lot: " + DoubleToString(lotSize, 2) +
-            " | SL: " + DoubleToString(stopLoss, _Digits) +
-            " | TP: " + DoubleToString(takeProfit, _Digits));
-
-      if(EnableVisualMarkers)
-         MarkBreakout(idx, orderType, entryPrice);
+         SendNotificationAlert("TRADE FAILED [" + symbolDataArray[idx].symbol + "] - " +
+               result.comment + " (Code: " + IntegerToString(result.retcode) + ")");
+      }
    }
    else
    {
       if(EnableLogging)
-         Print("ERROR [", symbolDataArray[idx].symbol, "]: Order failed - ",
-               trade.ResultComment(), " (", trade.ResultRetcode(), ")");
+         Print("ERROR [", symbolDataArray[idx].symbol, "]: OrderSend failed - ", GetLastError());
 
-      SendNotificationAlert("TRADE FAILED [" + symbolDataArray[idx].symbol + "] - " +
-            trade.ResultComment() + " (Code: " + IntegerToString(trade.ResultRetcode()) + ")");
+      SendNotificationAlert("ORDER SEND FAILED [" + symbolDataArray[idx].symbol + "] - Error: " +
+            IntegerToString(GetLastError()));
    }
 }
 
@@ -654,10 +663,35 @@ void ClosePositionsForSymbol(int idx)
          if(PositionGetInteger(POSITION_MAGIC) == MagicNumber)
          {
             ulong ticket = PositionGetInteger(POSITION_TICKET);
-            trade.PositionClose(ticket);
+            double volume = PositionGetDouble(POSITION_VOLUME);
+            ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
 
-            if(EnableLogging)
-               Print("CLOSED position [", symbolDataArray[idx].symbol, "] ticket: ", ticket);
+            MqlTradeRequest request = {};
+            MqlTradeResult  result  = {};
+
+            request.action   = TRADE_ACTION_DEAL;
+            request.symbol   = symbolDataArray[idx].symbol;
+            request.volume   = volume;
+            request.type     = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+            request.price    = (posType == POSITION_TYPE_BUY) ?
+                               SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_BID) :
+                               SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_ASK);
+            request.position = ticket;
+            request.deviation = 10;
+            request.magic    = MagicNumber;
+            request.comment  = "ORB_CLOSE";
+
+            if(OrderSend(request, result))
+            {
+               if(EnableLogging)
+                  Print("CLOSED position [", symbolDataArray[idx].symbol, "] ticket: ", ticket);
+            }
+            else
+            {
+               if(EnableLogging)
+                  Print("ERROR closing position [", symbolDataArray[idx].symbol,
+                        "] ticket: ", ticket, " error: ", GetLastError());
+            }
          }
       }
    }
