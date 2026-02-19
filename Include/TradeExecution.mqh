@@ -102,6 +102,9 @@ public:
          return -1;
       }
       
+      //--- reset last error before trade
+      ResetLastError();
+      
       //--- execute buy order
       bool result = m_trade.Buy(lots, m_symbol, price, stopLoss, takeProfit, 
                                 "VolumeBreakout BUY");
@@ -118,8 +121,10 @@ public:
       else
       {
          m_failedOrders++;
-         Print("Failed to execute BUY order. Error: ", GetLastError(), 
-               ", Return code: ", m_trade.ResultRetcode());
+         int errorCode = GetLastError();
+         Print("Failed to execute BUY order. Error: ", errorCode, 
+               ", Return code: ", m_trade.ResultRetcode(),
+               ", Comment: ", m_trade.ResultComment());
          return -1;
       }
    }
@@ -146,6 +151,9 @@ public:
          return -1;
       }
       
+      //--- reset last error before trade
+      ResetLastError();
+      
       //--- execute sell order
       bool result = m_trade.Sell(lots, m_symbol, price, stopLoss, takeProfit, 
                                  "VolumeBreakout SELL");
@@ -162,8 +170,10 @@ public:
       else
       {
          m_failedOrders++;
-         Print("Failed to execute SELL order. Error: ", GetLastError(), 
-               ", Return code: ", m_trade.ResultRetcode());
+         int errorCode = GetLastError();
+         Print("Failed to execute SELL order. Error: ", errorCode, 
+               ", Return code: ", m_trade.ResultRetcode(),
+               ", Comment: ", m_trade.ResultComment());
          return -1;
       }
    }

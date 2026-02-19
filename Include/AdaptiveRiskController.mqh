@@ -83,8 +83,23 @@ public:
       double tickSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_SIZE);
       double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
       
+      //--- validate symbol info
+      if(tickValue <= 0 || tickSize <= 0 || point <= 0)
+      {
+         Print("Invalid symbol information: tickValue=", tickValue, ", tickSize=", tickSize, ", point=", point);
+         return 0;
+      }
+      
       //--- calculate lot size
       double pointValue = tickValue * (point / tickSize);
+      
+      //--- protect against division by zero
+      if(pointValue <= 0)
+      {
+         Print("Invalid point value: ", pointValue);
+         return 0;
+      }
+      
       double lots = riskAmount / (stopLossPoints * pointValue);
       
       //--- normalize to lot step

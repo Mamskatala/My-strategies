@@ -114,6 +114,43 @@ CAdaptiveRiskController g_riskCtrl;
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   //--- validate input parameters
+   if(InpVolumePeriod <= 0 || InpVolumePeriod > 10000)
+   {
+      Print("Invalid InpVolumePeriod parameter: ", InpVolumePeriod, ". Must be between 1 and 10000.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   
+   if(InpBreakoutBars <= 0 || InpBreakoutBars > 1000)
+   {
+      Print("Invalid InpBreakoutBars parameter: ", InpBreakoutBars, ". Must be between 1 and 1000.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   
+   if(InpLotSize <= 0)
+   {
+      Print("Invalid InpLotSize parameter: ", InpLotSize, ". Must be greater than 0.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   
+   if(InpMaxRiskPercent <= 0 || InpMaxRiskPercent > 50)
+   {
+      Print("Invalid InpMaxRiskPercent parameter: ", InpMaxRiskPercent, ". Must be between 0 and 50.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   
+   if(InpStopLoss < 0 || InpTakeProfit < 0)
+   {
+      Print("Invalid stop loss or take profit parameters. Must be non-negative.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   
+   if(InpSlippage < 0)
+   {
+      Print("Invalid InpSlippage parameter: ", InpSlippage, ". Must be non-negative.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   
    //--- initialize arrays
    ArrayResize(g_volumeDelta, InpVolumePeriod);
    ArrayResize(g_priceHigh, InpBreakoutBars);
@@ -293,7 +330,12 @@ void UpdateVolumeDelta()
    double sumVolume = 0;
    for(int i = 0; i < InpVolumePeriod; i++)
       sumVolume += g_volume[i];
-   g_volAnalysis.avgVolume = sumVolume / InpVolumePeriod;
+   
+   // Protect against division by zero
+   if(InpVolumePeriod > 0)
+      g_volAnalysis.avgVolume = sumVolume / InpVolumePeriod;
+   else
+      g_volAnalysis.avgVolume = 0;
    
    //--- calculate volume standard deviation
    double sumSquares = 0;
@@ -302,7 +344,12 @@ void UpdateVolumeDelta()
       double diff = g_volume[i] - g_volAnalysis.avgVolume;
       sumSquares += diff * diff;
    }
-   g_volAnalysis.volumeStdDev = MathSqrt(sumSquares / InpVolumePeriod);
+   
+   // Protect against division by zero
+   if(InpVolumePeriod > 0)
+      g_volAnalysis.volumeStdDev = MathSqrt(sumSquares / InpVolumePeriod);
+   else
+      g_volAnalysis.volumeStdDev = 0;
    
    //--- detect volume divergence
    DetectVolumeDivergence();
@@ -316,6 +363,14 @@ void DetectVolumeDivergence()
    if(g_barCount < InpVolumePeriod)
    {
       g_barCount++;
+      return;
+   }
+   
+   //--- ensure we have enough data
+   if(InpVolumePeriod <= 0 || ArraySize(g_volumeDelta) < InpVolumePeriod)
+   {
+      g_volAnalysis.bullishDivergence = false;
+      g_volAnalysis.bearishDivergence = false;
       return;
    }
    
@@ -365,7 +420,12 @@ void DetectBreakout()
       g_breakout.takeProfit = currentPrice + InpTakeProfit * _Point;
       g_breakout.volume = g_volume[0];
       g_breakout.signalTime = TimeCurrent();
-      g_breakout.strength = (int)((g_volAnalysis.volumeDelta / g_volAnalysis.avgVolume) * 100);
+      
+      // Protect against division by zero
+      if(g_volAnalysis.avgVolume > 0)
+         g_breakout.strength = (int)((g_volAnalysis.volumeDelta / g_volAnalysis.avgVolume) * 100);
+      else
+         g_breakout.strength = 0;
    }
    //--- check for bearish breakout
    else if(previousClose < lowestLow && 
@@ -378,7 +438,12 @@ void DetectBreakout()
       g_breakout.takeProfit = currentPrice - InpTakeProfit * _Point;
       g_breakout.volume = g_volume[0];
       g_breakout.signalTime = TimeCurrent();
-      g_breakout.strength = (int)((-g_volAnalysis.volumeDelta / g_volAnalysis.avgVolume) * 100);
+      
+      // Protect against division by zero
+      if(g_volAnalysis.avgVolume > 0)
+         g_breakout.strength = (int)((-g_volAnalysis.volumeDelta / g_volAnalysis.avgVolume) * 100);
+      else
+         g_breakout.strength = 0;
    }
 }
 
