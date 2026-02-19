@@ -713,7 +713,11 @@ void ExecuteTrade(int symbolIndex)
       symbolDataArray[symbolIndex].triggerLevel, stopLoss);
    
    if(lotSize <= 0)
+   {
+      if(EnableLogging)
+         Print("ERROR [", symbolDataArray[symbolIndex].symbol, "]: Invalid lot size calculation");
       return;
+   }
    
    // Prepare trade request
    MqlTradeRequest request = {};

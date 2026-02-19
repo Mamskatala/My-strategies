@@ -422,7 +422,6 @@ void BuildOpeningRange(int idx, MqlDateTime &dt)
             Print(">>> [", g_symbolData[idx].symbol, "] OR range too tight (",
                   DoubleToString(orRange, _Digits), " < ",
                   DoubleToString(MinORRangeATR * atrValue, _Digits), ") → SKIP");
-         g_riskCtrl.RecordFalseBreakout();  // Tight range = unfavorable
          g_symbolData[idx].state = ORB_SESSION_DONE;
          return;
       }
@@ -643,7 +642,13 @@ void DrawOpeningRange(int idx)
    if(ObjectFind(0, objName) >= 0)
       ObjectDelete(0, objName);
 
-   datetime endTime = g_symbolData[idx].orStartTime + SessionEndHour * 3600;
+   // Calculate end time from the start of the same day
+   MqlDateTime dtStart;
+   TimeToStruct(g_symbolData[idx].orStartTime, dtStart);
+   dtStart.hour = SessionEndHour;
+   dtStart.min = 0;
+   dtStart.sec = 0;
+   datetime endTime = StructToTime(dtStart);
 
    ObjectCreate(0, objName, OBJ_RECTANGLE, 0,
       g_symbolData[idx].orStartTime, g_symbolData[idx].orHigh,

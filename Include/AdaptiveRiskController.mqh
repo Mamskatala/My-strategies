@@ -271,7 +271,11 @@ private:
 
       int barsNeeded = m_atrLookback + 1;
       if(CopyBuffer(atrHandle, 0, 0, barsNeeded, atrBuffer) < barsNeeded)
-         return 1.0;  // Default ratio if data unavailable
+      {
+         if(m_enableLogging)
+            Print("[REGIME] Warning: ATR buffer copy failed, using neutral ratio");
+         return 1.0;
+      }
 
       double currentATR = atrBuffer[0];
       double sumATR = 0;
@@ -318,7 +322,8 @@ private:
 
       winRate = (double)wins / count;
       expectancy = totalPnL / count;
-      profitFactor = (totalLoss > 0) ? (totalProfit / totalLoss) : ((totalProfit > 0) ? 99.0 : 0);
+      // Use high value when no losses (all wins); 0 when no wins
+      profitFactor = (totalLoss > 0) ? (totalProfit / totalLoss) : ((totalProfit > 0) ? 99.0 : 0.0);
    }
 
    //--- Check performance and return suggested regime
