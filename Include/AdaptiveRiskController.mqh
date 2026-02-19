@@ -243,6 +243,53 @@ public:
       // Don't reset consecutive losses - they carry over for regime assessment
    }
 
+   //--- Overloaded Init for simplified usage (EA_VolumeDeltaBreakout compatibility)
+   bool Init(double maxRiskPercent, bool adaptiveEnabled)
+   {
+      m_normalRisk = maxRiskPercent;
+      m_cautionRisk = maxRiskPercent / 2.0;
+      m_enableLogging = true;
+      m_peakBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      // Use defaults for other parameters
+      return true;
+   }
+
+   //--- Calculate lot size from risk amount and stop loss in points
+   double CalculateLotSize(double riskAmount, double stopLossPoints)
+   {
+      if(stopLossPoints <= 0 || riskAmount <= 0)
+         return 0;
+
+      string symbol = _Symbol;
+      double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+      double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+      double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+
+      if(tickValue <= 0 || tickSize <= 0 || point <= 0)
+      {
+         if(m_enableLogging)
+            Print("ERROR: Invalid symbol info for lot calculation");
+         return 0;
+      }
+
+      double pointValue = tickValue * (point / tickSize);
+      if(pointValue <= 0)
+         return 0;
+
+      double lots = riskAmount / (stopLossPoints * pointValue);
+
+      // Normalize
+      double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+      double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+      double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+
+      if(lotStep <= 0) lotStep = 0.01;
+      lots = MathFloor(lots / lotStep) * lotStep;
+      lots = MathMax(minLot, MathMin(maxLot, lots));
+
+      return lots;
+   }
+
    //--- Getters
    ENUM_RISK_REGIME GetCurrentRegime() const { return m_currentRegime; }
    int GetConsecutiveLosses() const { return m_consecutiveLosses; }

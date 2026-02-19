@@ -27,6 +27,16 @@ public:
       m_enableEmail = email;
    }
 
+   //--- Overloaded Init for EA_VolumeDeltaBreakout compatibility
+   bool Init(string symbol, int magicNumber, bool enabled)
+   {
+      m_eaName = symbol + "_" + IntegerToString(magicNumber);
+      m_enableAlerts = enabled;
+      m_enablePush = false;
+      m_enableEmail = enabled;
+      return true;
+   }
+
    void Send(string symbol, string message)
    {
       string fullMessage = "[" + symbol + "] " + message;
@@ -35,10 +45,30 @@ public:
          Alert(fullMessage);
 
       if(m_enablePush)
-         SendNotification(fullMessage);
+         ::SendNotification(fullMessage);
 
       if(m_enableEmail)
          SendMail(m_eaName + " Alert - " + symbol, fullMessage);
+   }
+
+   //--- SendNotification wrapper (sends via alerts/email based on config)
+   bool SendNotification(string message)
+   {
+      string fullMessage = "[" + m_eaName + "] " + message;
+
+      if(m_enableAlerts)
+      {
+         Print(fullMessage);
+         Alert(fullMessage);
+      }
+
+      if(m_enablePush)
+         ::SendNotification(fullMessage);
+
+      if(m_enableEmail && TerminalInfoInteger(TERMINAL_EMAIL_ENABLED))
+         SendMail(m_eaName + " Alert", fullMessage);
+
+      return true;
    }
 };
 

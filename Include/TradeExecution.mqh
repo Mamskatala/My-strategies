@@ -14,15 +14,26 @@ private:
    int m_magicNumber;
    int m_slippage;
    bool m_enableLogging;
+   string m_symbol;
 
 public:
-   CTradeExecutor() : m_magicNumber(0), m_slippage(10), m_enableLogging(true) {}
+   CTradeExecutor() : m_magicNumber(0), m_slippage(10), m_enableLogging(true), m_symbol("") {}
 
    void Init(int magic, int slippage, bool logging)
    {
       m_magicNumber = magic;
       m_slippage = slippage;
       m_enableLogging = logging;
+   }
+
+   //--- Overloaded Init for EA_VolumeDeltaBreakout compatibility
+   bool Init(string symbol, int magicNumber, int slippage)
+   {
+      m_symbol = symbol;
+      m_magicNumber = magicNumber;
+      m_slippage = slippage;
+      m_enableLogging = true;
+      return true;
    }
 
    //--- Calculate lot size based on risk
@@ -133,6 +144,76 @@ public:
    }
 
    int GetMagicNumber() const { return m_magicNumber; }
+
+   //--- Execute buy order (returns ticket or -1 on failure)
+   int ExecuteBuy(double lots, double stopLoss, double takeProfit)
+   {
+      string symbol = (m_symbol != "") ? m_symbol : _Symbol;
+
+      MqlTradeRequest request = {};
+      MqlTradeResult result = {};
+
+      request.action = TRADE_ACTION_DEAL;
+      request.symbol = symbol;
+      request.volume = lots;
+      request.type = ORDER_TYPE_BUY;
+      request.price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+      request.sl = NormalizeDouble(stopLoss, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS));
+      request.tp = NormalizeDouble(takeProfit, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS));
+      request.deviation = m_slippage;
+      request.magic = m_magicNumber;
+      request.comment = "VolumeBreakout BUY";
+
+      if(OrderSend(request, result))
+      {
+         if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
+         {
+            if(m_enableLogging)
+               Print("BUY order executed successfully. Ticket: ", result.order);
+            return (int)result.order;
+         }
+      }
+
+      if(m_enableLogging)
+         Print("Failed to execute BUY order. Error: ", GetLastError(),
+               ", Return code: ", result.retcode);
+      return -1;
+   }
+
+   //--- Execute sell order (returns ticket or -1 on failure)
+   int ExecuteSell(double lots, double stopLoss, double takeProfit)
+   {
+      string symbol = (m_symbol != "") ? m_symbol : _Symbol;
+
+      MqlTradeRequest request = {};
+      MqlTradeResult result = {};
+
+      request.action = TRADE_ACTION_DEAL;
+      request.symbol = symbol;
+      request.volume = lots;
+      request.type = ORDER_TYPE_SELL;
+      request.price = SymbolInfoDouble(symbol, SYMBOL_BID);
+      request.sl = NormalizeDouble(stopLoss, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS));
+      request.tp = NormalizeDouble(takeProfit, (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS));
+      request.deviation = m_slippage;
+      request.magic = m_magicNumber;
+      request.comment = "VolumeBreakout SELL";
+
+      if(OrderSend(request, result))
+      {
+         if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
+         {
+            if(m_enableLogging)
+               Print("SELL order executed successfully. Ticket: ", result.order);
+            return (int)result.order;
+         }
+      }
+
+      if(m_enableLogging)
+         Print("Failed to execute SELL order. Error: ", GetLastError(),
+               ", Return code: ", result.retcode);
+      return -1;
+   }
 };
 
 #endif
