@@ -39,7 +39,7 @@ input int    MaxSpreadPoints    = 2500;       // Max spread in points
 
 //--- Indicator Settings
 input int    ATRPeriod          = 14;         // ATR period for volatility filter
-input double MinATRMult         = 0.3;        // Min opening range as ATR multiple
+input double MinATRMult         = 0.0;        // Min opening range as ATR multiple (0=disabled)
 input double MaxATRMult         = 5.0;        // Max opening range as ATR multiple
 
 //--- Notifications
@@ -256,6 +256,31 @@ bool IsSessionEnd(const MqlDateTime &dt)
 }
 
 //+------------------------------------------------------------------+
+//| Get supported order filling mode for a symbol                    |
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING GetFillingMode(string sym)
+{
+   long fillMode = SymbolInfoInteger(sym, SYMBOL_FILLING_MODE);
+   if((fillMode & 1) != 0)         // FOK supported
+      return(ORDER_FILLING_FOK);
+   if((fillMode & 2) != 0)         // IOC supported
+      return(ORDER_FILLING_IOC);
+   return(ORDER_FILLING_RETURN);    // RETURN is always available
+}
+
+//+------------------------------------------------------------------+
+//| Normalize price to symbol tick size                              |
+//+------------------------------------------------------------------+
+double NormalizePrice(string sym, double price)
+{
+   double tickSize = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   if(tickSize > 0)
+      return(NormalizeDouble(MathRound(price / tickSize) * tickSize, digits));
+   return(NormalizeDouble(price, digits));
+}
+
+//+------------------------------------------------------------------+
 //| Process individual symbol                                        |
 //+------------------------------------------------------------------+
 void ProcessSymbol(int idx)
@@ -461,7 +486,7 @@ void CheckBreakout(int idx)
    int currentSpread = (int)((ask - bid) / point);
    if(currentSpread > MaxSpreadPoints)
    {
-      if(EnableLogging && !isBacktest)
+      if(EnableLogging)
          Print("  SPREAD FILTER [", symbolDataArray[idx].symbol, "]: ",
                currentSpread, " > ", MaxSpreadPoints);
       return;
@@ -545,6 +570,12 @@ void ExecuteBreakoutTrade(int idx, ENUM_ORDER_TYPE orderType)
    else
       takeProfit = entryPrice - tpDistance;
 
+   // Normalize prices to symbol tick size
+   string sym = symbolDataArray[idx].symbol;
+   entryPrice = NormalizePrice(sym, entryPrice);
+   stopLoss   = NormalizePrice(sym, stopLoss);
+   takeProfit = NormalizePrice(sym, takeProfit);
+
    // Calculate lot size
    double tickValue = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -594,6 +625,7 @@ void ExecuteBreakoutTrade(int idx, ENUM_ORDER_TYPE orderType)
    request.deviation = 10;
    request.magic    = MagicNumber;
    request.comment  = comment;
+   request.type_filling = GetFillingMode(symbolDataArray[idx].symbol);
 
    if(OrderSend(request, result))
    {
@@ -676,6 +708,7 @@ void ClosePositionsForSymbol(int idx)
             request.deviation = 10;
             request.magic    = MagicNumber;
             request.comment  = "ORB_CLOSE";
+            request.type_filling = GetFillingMode(symbolDataArray[idx].symbol);
 
             if(OrderSend(request, result))
             {
