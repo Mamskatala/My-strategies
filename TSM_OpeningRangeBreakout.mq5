@@ -1,4 +1,4 @@
-//+------------------------------------------------------------------+
+﻿﻿//+------------------------------------------------------------------+
 //|                                    TSM_OpeningRangeBreakout.mq5 |
 //|                        TSM Opening Range Breakout - P.J. Kaufman |
 //|                                     Production-Grade Multi-Symbol |
