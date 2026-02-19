@@ -166,7 +166,10 @@ public:
       else
       {
          //--- calculate current drawdown
-         m_currentDrawdown = ((m_peakBalance - currentBalance) / m_peakBalance) * 100.0;
+         if(m_peakBalance > 0)
+            m_currentDrawdown = ((m_peakBalance - currentBalance) / m_peakBalance) * 100.0;
+         else
+            m_currentDrawdown = 0;
          
          //--- update max drawdown
          if(m_currentDrawdown > m_maxDrawdown)
