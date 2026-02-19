@@ -8,47 +8,46 @@
 #property version   "1.00"
 #property description "TSM Opening Range Breakout - P.J. Kaufman"
 
-//--- Input parameters
-input group "=== Opening Range Settings ==="
+//--- Opening Range Settings
 input int    ORBStartHour       = 9;          // Opening range start hour
 input int    ORBStartMinute     = 30;         // Opening range start minute
 input int    ORBDurationBars    = 6;          // Number of M5 bars for opening range (30 min)
 input double BreakoutBuffer     = 0.0;        // Buffer beyond range for breakout (in points)
 
-input group "=== Trading Session ==="
+//--- Trading Session
 input int    SessionEndHour     = 16;         // Session end hour (close all positions)
 input int    SessionEndMinute   = 0;          // Session end minute
 input bool   CloseAtSessionEnd  = true;       // Close positions at session end
 
-input group "=== Multi-Symbol Settings ==="
+//--- Multi-Symbol Settings
 input string TradingSymbols         = "NDAQ,NAS100,US100"; // Symbols to trade (comma separated)
 input bool   UseCurrentSymbolOnly   = true;                // If true, ignore TradingSymbols
 
-input group "=== Direction Filter ==="
+//--- Direction Filter
 input bool   TradeBullish       = true;       // Allow long breakouts
 input bool   TradeBearish       = true;       // Allow short breakouts
 input bool   TradeFirstBreakout = true;       // Only trade first breakout of the day
 
-input group "=== Risk Management ==="
+//--- Risk Management
 input double RiskPercent        = 1.0;        // Risk per trade (%)
 input double RewardRiskRatio    = 2.0;        // Reward:Risk ratio
 input int    MaxDailyTrades     = 2;          // Max trades per day per symbol
 input int    MagicNumber        = 54321;      // Magic number for orders
 
-input group "=== Spread Filter ==="
+//--- Spread Filter
 input int    MaxSpreadPoints    = 2500;       // Max spread in points
 
-input group "=== Indicator Settings ==="
+//--- Indicator Settings
 input int    ATRPeriod          = 14;         // ATR period for volatility filter
 input double MinATRMult         = 0.3;        // Min opening range as ATR multiple
 input double MaxATRMult         = 5.0;        // Max opening range as ATR multiple
 
-input group "=== Notifications ==="
+//--- Notifications
 input bool   EnableAlerts              = true;  // Enable popup alerts
 input bool   EnablePushNotifications   = false; // Enable push to mobile
 input bool   EnableEmailNotifications  = false; // Enable email alerts
 
-input group "=== Debugging ==="
+//--- Debugging
 input bool   EnableLogging        = true;     // Enable detailed logging
 input bool   EnableVisualMarkers  = true;     // Enable chart markers
 
@@ -173,7 +172,7 @@ void SendNotificationAlert(string message)
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   isBacktest = MQLInfoInteger(MQL_TESTER);
+   isBacktest = (bool)MQLInfoInteger(MQL_TESTER);
 
    if(isBacktest)
       Print("Running in STRATEGY TESTER mode");
@@ -506,7 +505,7 @@ bool HasOpenPosition(int idx)
    {
       if(PositionGetSymbol(i) == symbolDataArray[idx].symbol)
       {
-         if(PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+         if((int)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
             return true;
       }
    }
@@ -580,8 +579,10 @@ void ExecuteBreakoutTrade(int idx, ENUM_ORDER_TYPE orderType)
    // Execute trade
    string comment = "ORB_" + (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL");
 
-   MqlTradeRequest request = {};
-   MqlTradeResult  result  = {};
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+   ZeroMemory(request);
+   ZeroMemory(result);
 
    request.action   = TRADE_ACTION_DEAL;
    request.symbol   = symbolDataArray[idx].symbol;
@@ -653,14 +654,16 @@ void ClosePositionsForSymbol(int idx)
    {
       if(PositionGetSymbol(i) == symbolDataArray[idx].symbol)
       {
-         if(PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+         if((int)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
          {
-            ulong ticket = PositionGetInteger(POSITION_TICKET);
+            ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
             double volume = PositionGetDouble(POSITION_VOLUME);
             ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
 
-            MqlTradeRequest request = {};
-            MqlTradeResult  result  = {};
+            MqlTradeRequest request;
+            MqlTradeResult  result;
+            ZeroMemory(request);
+            ZeroMemory(result);
 
             request.action   = TRADE_ACTION_DEAL;
             request.symbol   = symbolDataArray[idx].symbol;
