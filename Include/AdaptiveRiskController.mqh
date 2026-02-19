@@ -246,9 +246,11 @@ public:
    //--- Overloaded Init for simplified usage (EA_VolumeDeltaBreakout compatibility)
    bool Init(double maxRiskPercent, bool adaptiveEnabled)
    {
+      if(maxRiskPercent <= 0)
+         return false;
       m_normalRisk = maxRiskPercent;
       m_cautionRisk = maxRiskPercent / 2.0;
-      m_enableLogging = true;
+      m_enableLogging = adaptiveEnabled;
       m_peakBalance = AccountInfoDouble(ACCOUNT_BALANCE);
       // Use defaults for other parameters
       return true;

@@ -29,6 +29,8 @@ public:
    //--- Overloaded Init for EA_VolumeDeltaBreakout compatibility
    bool Init(string symbol, int magicNumber, int slippage)
    {
+      if(symbol == "" || magicNumber < 0 || slippage < 0)
+         return false;
       m_symbol = symbol;
       m_magicNumber = magicNumber;
       m_slippage = slippage;
@@ -145,10 +147,14 @@ public:
 
    int GetMagicNumber() const { return m_magicNumber; }
 
+private:
+   string GetActiveSymbol() const { return (m_symbol != "") ? m_symbol : _Symbol; }
+
+public:
    //--- Execute buy order (returns ticket or -1 on failure)
    int ExecuteBuy(double lots, double stopLoss, double takeProfit)
    {
-      string symbol = (m_symbol != "") ? m_symbol : _Symbol;
+      string symbol = GetActiveSymbol();
 
       MqlTradeRequest request = {};
       MqlTradeResult result = {};
@@ -183,7 +189,7 @@ public:
    //--- Execute sell order (returns ticket or -1 on failure)
    int ExecuteSell(double lots, double stopLoss, double takeProfit)
    {
-      string symbol = (m_symbol != "") ? m_symbol : _Symbol;
+      string symbol = GetActiveSymbol();
 
       MqlTradeRequest request = {};
       MqlTradeResult result = {};
