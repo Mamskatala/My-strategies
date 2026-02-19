@@ -6,7 +6,7 @@
 #property copyright "TSM Opening Range Breakout - P.J. Kaufman"
 #property link      ""
 #property version   "1.00"
-#property strict
+#property description "TSM Opening Range Breakout - P.J. Kaufman"
 
 //--- Input parameters
 input group "=== Opening Range Settings ==="
@@ -22,7 +22,7 @@ input bool   CloseAtSessionEnd  = true;       // Close positions at session end
 
 input group "=== Multi-Symbol Settings ==="
 input string TradingSymbols         = "NDAQ,NAS100,US100"; // Symbols to trade (comma separated)
-input bool   UseCurrentSymbolOnly   = false;               // If true, ignore TradingSymbols
+input bool   UseCurrentSymbolOnly   = true;                // If true, ignore TradingSymbols
 
 input group "=== Direction Filter ==="
 input bool   TradeBullish       = true;       // Allow long breakouts
@@ -154,6 +154,10 @@ bool InitializeSymbols()
 //+------------------------------------------------------------------+
 void SendNotificationAlert(string message)
 {
+   // Skip notifications in Strategy Tester
+   if(isBacktest)
+      return;
+
    if(EnableAlerts)
       Alert(message);
 
@@ -231,18 +235,6 @@ bool IsORBStartBar(const MqlDateTime &dt)
 }
 
 //+------------------------------------------------------------------+
-//| Check if current time is within opening range building period    |
-//+------------------------------------------------------------------+
-bool IsWithinORBPeriod(const MqlDateTime &dt)
-{
-   int currentMinutes = dt.hour * 60 + dt.min;
-   int startMinutes   = ORBStartHour * 60 + ORBStartMinute;
-   int endMinutes     = startMinutes + ORBDurationBars * 5;
-
-   return (currentMinutes >= startMinutes && currentMinutes < endMinutes);
-}
-
-//+------------------------------------------------------------------+
 //| Check if current time is past the opening range                  |
 //+------------------------------------------------------------------+
 bool IsPastORBPeriod(const MqlDateTime &dt)
@@ -278,20 +270,24 @@ void ProcessSymbol(int idx)
    symbolDataArray[idx].lastBarTime = currentBarTime;
 
    MqlDateTime dt;
-   TimeToStruct(TimeCurrent(), dt);
+   TimeToStruct(currentBarTime, dt);
 
    // Reset state at start of new trading day
    datetime currentDate = iTime(symbolDataArray[idx].symbol, PERIOD_D1, 0);
-   if(currentDate != symbolDataArray[idx].lastTradeDate && symbolDataArray[idx].lastTradeDate != 0)
+   if(currentDate != symbolDataArray[idx].lastTradeDate)
    {
-      symbolDataArray[idx].state             = WAITING_SESSION;
-      symbolDataArray[idx].rangeHigh         = 0;
-      symbolDataArray[idx].rangeLow          = 0;
-      symbolDataArray[idx].rangeBarsCollected = 0;
-      symbolDataArray[idx].dailyTradeCount   = 0;
-      if(EnableLogging)
-         Print("=== NEW TRADING DAY: ", symbolDataArray[idx].symbol, " | ",
-               TimeToString(currentDate, TIME_DATE), " ===");
+      if(symbolDataArray[idx].lastTradeDate != 0)
+      {
+         symbolDataArray[idx].state             = WAITING_SESSION;
+         symbolDataArray[idx].rangeHigh         = 0;
+         symbolDataArray[idx].rangeLow          = 0;
+         symbolDataArray[idx].rangeBarsCollected = 0;
+         symbolDataArray[idx].dailyTradeCount   = 0;
+         if(EnableLogging)
+            Print("=== NEW TRADING DAY: ", symbolDataArray[idx].symbol, " | ",
+                  TimeToString(currentDate, TIME_DATE), " ===");
+      }
+      symbolDataArray[idx].lastTradeDate = currentDate;
    }
 
    // Close positions at session end
@@ -321,47 +317,44 @@ void ProcessSymbol(int idx)
          {
             // Start building the opening range
             symbolDataArray[idx].state = BUILDING_RANGE;
-            double high1 = iHigh(symbolDataArray[idx].symbol, PERIOD_M5, 0);
-            double low1  = iLow(symbolDataArray[idx].symbol, PERIOD_M5, 0);
-            symbolDataArray[idx].rangeHigh         = high1;
-            symbolDataArray[idx].rangeLow          = low1;
             symbolDataArray[idx].rangeStartTime    = currentBarTime;
-            symbolDataArray[idx].rangeBarsCollected = 1;
+            symbolDataArray[idx].rangeBarsCollected = 0;
 
             if(EnableLogging)
                Print(">>> STATE CHANGE [", symbolDataArray[idx].symbol,
-                     "]: WAITING_SESSION -> BUILDING_RANGE (bar 1/", ORBDurationBars, ")");
+                     "]: WAITING_SESSION -> BUILDING_RANGE");
          }
          break;
 
       case BUILDING_RANGE:
-         if(IsWithinORBPeriod(dt))
-         {
-            // Expand the opening range with each new bar
-            double high_i = iHigh(symbolDataArray[idx].symbol, PERIOD_M5, 0);
-            double low_i  = iLow(symbolDataArray[idx].symbol, PERIOD_M5, 0);
-
-            if(high_i > symbolDataArray[idx].rangeHigh)
-               symbolDataArray[idx].rangeHigh = high_i;
-            if(low_i < symbolDataArray[idx].rangeLow)
-               symbolDataArray[idx].rangeLow = low_i;
-
-            symbolDataArray[idx].rangeBarsCollected++;
-
-            if(EnableLogging)
-               Print("  BUILDING RANGE [", symbolDataArray[idx].symbol, "]: bar ",
-                     symbolDataArray[idx].rangeBarsCollected, "/", ORBDurationBars,
-                     " | H: ", DoubleToString(symbolDataArray[idx].rangeHigh, _Digits),
-                     " L: ", DoubleToString(symbolDataArray[idx].rangeLow, _Digits));
-         }
-
          if(IsPastORBPeriod(dt))
          {
+            // Calculate range from completed bars in the ORB window
+            double highs[], lows[];
+            ArraySetAsSeries(highs, true);
+            ArraySetAsSeries(lows, true);
+
+            int copied_h = CopyHigh(symbolDataArray[idx].symbol, PERIOD_M5, 1, ORBDurationBars, highs);
+            int copied_l = CopyLow(symbolDataArray[idx].symbol, PERIOD_M5, 1, ORBDurationBars, lows);
+
+            if(copied_h < ORBDurationBars || copied_l < ORBDurationBars)
+            {
+               if(EnableLogging)
+                  Print("ERROR [", symbolDataArray[idx].symbol,
+                        "]: Failed to copy bar data for range (got ", copied_h, "/", copied_l,
+                        ", need ", ORBDurationBars, ")");
+               symbolDataArray[idx].state = SESSION_DONE;
+               break;
+            }
+
+            symbolDataArray[idx].rangeHigh = highs[ArrayMaximum(highs)];
+            symbolDataArray[idx].rangeLow  = lows[ArrayMinimum(lows)];
+            symbolDataArray[idx].rangeBarsCollected = ORBDurationBars;
+
             // Validate opening range against ATR
             if(ValidateOpeningRange(idx))
             {
                symbolDataArray[idx].state = WATCHING_BREAKOUT;
-               symbolDataArray[idx].lastTradeDate = currentDate;
 
                double rangeSize = symbolDataArray[idx].rangeHigh - symbolDataArray[idx].rangeLow;
 
