@@ -16,6 +16,7 @@ class CAdaptiveRiskController
 private:
    double m_maxRiskPercent;
    bool m_adaptiveEnabled;
+   string m_symbol;
    
    //--- risk parameters
    double m_currentRiskPercent;
@@ -65,6 +66,7 @@ public:
       m_minRiskPercent = maxRiskPercent / 4.0;
       m_riskMultiplier = 1.0;
       
+      m_symbol = _Symbol;
       m_peakBalance = AccountInfoDouble(ACCOUNT_BALANCE);
       
       return true;
@@ -77,19 +79,18 @@ public:
          return 0;
       
       //--- get symbol info
-      string symbol = _Symbol;
-      double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
-      double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
-      double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+      double tickValue = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_VALUE);
+      double tickSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_SIZE);
+      double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
       
       //--- calculate lot size
       double pointValue = tickValue * (point / tickSize);
       double lots = riskAmount / (stopLossPoints * pointValue);
       
       //--- normalize to lot step
-      double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-      double maxLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-      double lotStep = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+      double minLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
+      double maxLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MAX);
+      double lotStep = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP);
       
       lots = MathMax(minLot, MathMin(maxLot, MathFloor(lots / lotStep) * lotStep));
       

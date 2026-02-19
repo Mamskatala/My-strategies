@@ -361,7 +361,7 @@ void DetectBreakout()
       g_breakout.isValid = true;
       g_breakout.direction = SIGNAL_BUY;
       g_breakout.entryPrice = currentPrice;
-      g_breakout.stopLoss = lowestLow - InpStopLoss * _Point;
+      g_breakout.stopLoss = currentPrice - InpStopLoss * _Point;
       g_breakout.takeProfit = currentPrice + InpTakeProfit * _Point;
       g_breakout.volume = g_volume[0];
       g_breakout.signalTime = TimeCurrent();
@@ -374,7 +374,7 @@ void DetectBreakout()
       g_breakout.isValid = true;
       g_breakout.direction = SIGNAL_SELL;
       g_breakout.entryPrice = currentPrice;
-      g_breakout.stopLoss = highestHigh + InpStopLoss * _Point;
+      g_breakout.stopLoss = currentPrice + InpStopLoss * _Point;
       g_breakout.takeProfit = currentPrice - InpTakeProfit * _Point;
       g_breakout.volume = g_volume[0];
       g_breakout.signalTime = TimeCurrent();
@@ -408,7 +408,11 @@ void CheckTradingSignals()
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   lotSize = MathMax(minLot, MathMin(maxLot, MathRound(lotSize / lotStep) * lotStep));
+   lotSize = MathMax(minLot, MathMin(maxLot, MathFloor(lotSize / lotStep) * lotStep));
+   
+   //--- ensure lot size is not zero
+   if(lotSize < minLot)
+      lotSize = minLot;
    
    //--- execute trade based on signal direction
    int ticket = -1;
