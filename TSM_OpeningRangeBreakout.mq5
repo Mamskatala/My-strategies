@@ -1,217 +1,409 @@
 //+------------------------------------------------------------------+
 //|                                    TSM_OpeningRangeBreakout.mq5 |
-//|                        TSM Opening Range Breakout - P.J. Kaufman |
-//|                                     Production-Grade Multi-Symbol |
+//|         M15 Reference + M5 Breakout/Retest/Confirm - BUY Only  |
 //+------------------------------------------------------------------+
-#property copyright "TSM Opening Range Breakout - P.J. Kaufman"
+#property copyright "TSM Opening Range Breakout"
 #property link      ""
-#property version   "1.00"
-#property description "TSM Opening Range Breakout - P.J. Kaufman"
+#property version   "2.00"
+#property description "M15 Ref (09:00) + M5 Breakout/Retest/Confirm - BUY Only"
 
-//--- Opening Range Settings
-input int    ORBStartHour       = 9;          // Opening range start hour
-input int    ORBStartMinute     = 30;         // Opening range start minute
-input int    ORBDurationBars    = 6;          // Number of M5 bars for opening range (30 min)
-input double BreakoutBuffer     = 0.0;        // Buffer beyond range for breakout (in points)
+#include <Trade\Trade.mqh>
 
-//--- Trading Session
-input int    SessionEndHour     = 16;         // Session end hour (close all positions)
-input int    SessionEndMinute   = 0;          // Session end minute
-input bool   CloseAtSessionEnd  = true;       // Close positions at session end
+//--- Inputs
+input int    LookbackSwing         = 10;     // N M5 bars for swing low SL
+input int    BufferSLPoints        = 50;     // SL buffer below recent low (points)
+input int    MinSLPoints           = 100;    // Minimum SL distance (points)
+input int    RetestTolerancePoints = 30;     // Retest zone tolerance (points)
+input int    FixedTP_Pips          = 50;     // Take Profit (pips)
+input double Lots                  = 0.10;   // Lot size
+input int    MagicNumber           = 54321;  // Magic number
+input int    MaxSlippagePoints     = 30;     // Max slippage (points)
+input int    RefHour               = 9;      // Reference M15 candle hour (server)
+input int    RefMinute             = 0;      // Reference M15 candle minute (server)
+input bool   DrawRefLines          = true;   // Draw RefHigh / RefLow lines
 
-//--- Multi-Symbol Settings
-input string TradingSymbols         = "NDAQ,NAS100,US100"; // Symbols to trade (comma separated)
-input bool   UseCurrentSymbolOnly   = true;                // If true, ignore TradingSymbols
+//--- Daily state
+bool   RangeDefined       = false;
+bool   BreakoutConfirmed  = false;
+bool   RetestConfirmed    = false;
+bool   TradeDoneToday     = false;
 
-//--- Direction Filter
-input bool   TradeBullish       = true;       // Allow long breakouts
-input bool   TradeBearish       = true;       // Allow short breakouts
-input bool   TradeFirstBreakout = true;       // Only trade first breakout of the day
+double RefHigh = 0.0;
+double RefLow  = 0.0;
 
-//--- Risk Management
-input double RiskPercent        = 1.0;        // Risk per trade (%)
-input double RewardRiskRatio    = 2.0;        // Reward:Risk ratio
-input int    MaxDailyTrades     = 2;          // Max trades per day per symbol
-input int    MagicNumber        = 54321;      // Magic number for orders
+datetime LastM5BarTime  = 0;
+int      CurrentDay     = -1;
 
-//--- Spread Filter
-input int    MaxSpreadPoints    = 2500;       // Max spread in points
-
-//--- Indicator Settings
-input int    ATRPeriod          = 14;         // ATR period for volatility filter
-input double MinATRMult         = 0.0;        // Min opening range as ATR multiple (0=disabled)
-input double MaxATRMult         = 5.0;        // Max opening range as ATR multiple
-
-//--- Notifications
-input bool   EnableAlerts              = true;  // Enable popup alerts
-input bool   EnablePushNotifications   = false; // Enable push to mobile
-input bool   EnableEmailNotifications  = false; // Enable email alerts
-
-//--- Debugging
-input bool   EnableLogging        = true;     // Enable detailed logging
-input bool   EnableVisualMarkers  = true;     // Enable chart markers
-
-//--- ORB State Machine
-enum ENUM_ORB_STATE
-{
-   WAITING_SESSION,      // Waiting for session open
-   BUILDING_RANGE,       // Building the opening range
-   WATCHING_BREAKOUT,    // Opening range set, watching for breakout
-   SESSION_DONE          // Session complete for today
-};
-
-//--- Multi-Symbol Data Structure
-struct SymbolORBData
-{
-   string            symbol;
-   ENUM_ORB_STATE    state;
-   double            rangeHigh;
-   double            rangeLow;
-   datetime          rangeStartTime;
-   int               rangeBarsCollected;
-   int               dailyTradeCount;
-   datetime          lastTradeDate;
-   int               atrHandle;
-   datetime          lastBarTime;
-};
-
-//--- Global variables
-SymbolORBData symbolDataArray[];
-bool isBacktest = false;
+//--- Trade object
+CTrade trade;
 
 //+------------------------------------------------------------------+
-//| Initialize symbols for multi-symbol support                      |
+//| Pip multiplier: 1 pip = 10 points for 5/3-digit brokers          |
 //+------------------------------------------------------------------+
-bool InitializeSymbols()
+int PipMultiplier()
 {
-   if(UseCurrentSymbolOnly)
-   {
-      ArrayResize(symbolDataArray, 1);
-      symbolDataArray[0].symbol            = _Symbol;
-      symbolDataArray[0].state             = WAITING_SESSION;
-      symbolDataArray[0].rangeHigh         = 0;
-      symbolDataArray[0].rangeLow          = 0;
-      symbolDataArray[0].rangeStartTime    = 0;
-      symbolDataArray[0].rangeBarsCollected = 0;
-      symbolDataArray[0].dailyTradeCount   = 0;
-      symbolDataArray[0].lastTradeDate     = 0;
-      symbolDataArray[0].lastBarTime       = 0;
-
-      symbolDataArray[0].atrHandle = iATR(_Symbol, PERIOD_M5, ATRPeriod);
-      if(symbolDataArray[0].atrHandle == INVALID_HANDLE)
-      {
-         Print("ERROR: Cannot initialize ATR for ", _Symbol);
-         return false;
-      }
-
-      Print("Single-symbol mode: ", _Symbol);
-      return true;
-   }
-
-   // Parse TradingSymbols (separated by commas)
-   string symbols[];
-   int count = StringSplit(TradingSymbols, ',', symbols);
-
-   if(count <= 0)
-   {
-      Print("ERROR: No symbols found in TradingSymbols input");
-      return false;
-   }
-
-   ArrayResize(symbolDataArray, count);
-   for(int i = 0; i < count; i++)
-   {
-      StringTrimLeft(symbols[i]);
-      StringTrimRight(symbols[i]);
-
-      symbolDataArray[i].symbol            = symbols[i];
-      symbolDataArray[i].state             = WAITING_SESSION;
-      symbolDataArray[i].rangeHigh         = 0;
-      symbolDataArray[i].rangeLow          = 0;
-      symbolDataArray[i].rangeStartTime    = 0;
-      symbolDataArray[i].rangeBarsCollected = 0;
-      symbolDataArray[i].dailyTradeCount   = 0;
-      symbolDataArray[i].lastTradeDate     = 0;
-      symbolDataArray[i].lastBarTime       = 0;
-
-      symbolDataArray[i].atrHandle = iATR(symbols[i], PERIOD_M5, ATRPeriod);
-      if(symbolDataArray[i].atrHandle == INVALID_HANDLE)
-      {
-         Print("ERROR: Cannot initialize ATR for ", symbols[i]);
-         return false;
-      }
-
-      Print("Initialized symbol [", i, "]: ", symbols[i]);
-   }
-
-   Print("Multi-symbol mode: ", count, " symbols configured");
-   return true;
+   return (_Digits == 5 || _Digits == 3) ? 10 : 1;
 }
 
 //+------------------------------------------------------------------+
-//| Send notification (Alert, Push, Email)                           |
-//+------------------------------------------------------------------+
-void SendNotificationAlert(string message)
-{
-   // Skip notifications in Strategy Tester
-   if(isBacktest)
-      return;
-
-   if(EnableAlerts)
-      Alert(message);
-
-   if(EnablePushNotifications)
-      SendNotification(message);
-
-   if(EnableEmailNotifications)
-      SendMail("TSM ORB Alert", message);
-}
-
-//+------------------------------------------------------------------+
-//| Expert initialization function                                   |
+//| Expert initialization                                            |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   isBacktest = (bool)MQLInfoInteger(MQL_TESTER);
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(MaxSlippagePoints);
 
-   if(isBacktest)
-      Print("Running in STRATEGY TESTER mode");
-   else
-      Print("Running in LIVE/DEMO mode");
-
-   if(!InitializeSymbols())
-   {
-      Print("ERROR: Failed to initialize symbols");
-      return INIT_FAILED;
-   }
-
-   Print("========================================");
-   Print("TSM Opening Range Breakout initialized");
-   Print("Timeframe: M5");
-   Print("Opening range: ", ORBStartHour, ":", (ORBStartMinute < 10 ? "0" : ""), ORBStartMinute,
-         " (", ORBDurationBars * 5, " min)");
-   Print("Session end: ", SessionEndHour, ":", (SessionEndMinute < 10 ? "0" : ""), SessionEndMinute);
-   Print("Symbols: ", ArraySize(symbolDataArray));
-   Print("========================================");
+   Print("=== TSM ORB v2.0 initialized ===");
+   Print("Symbol: ", _Symbol, " | Digits: ", _Digits, " | PipMult: ", PipMultiplier());
+   Print("RefHour: ", RefHour, ":", (RefMinute < 10 ? "0" : ""), RefMinute);
+   Print("FixedTP_Pips: ", FixedTP_Pips, " | LookbackSwing: ", LookbackSwing);
+   Print("Lots: ", DoubleToString(Lots, 2), " | Magic: ", MagicNumber);
 
    return INIT_SUCCEEDED;
 }
 
 //+------------------------------------------------------------------+
-//| Expert deinitialization function                                 |
+//| Expert deinitialization                                          |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   for(int i = 0; i < ArraySize(symbolDataArray); i++)
+   ObjectDelete(0, "ORB_RefHigh");
+   ObjectDelete(0, "ORB_RefLow");
+   Print("=== TSM ORB v2.0 deinitialized ===");
+}
+
+//+------------------------------------------------------------------+
+//| ResetDailyState - reset all flags for new day                    |
+//+------------------------------------------------------------------+
+void ResetDailyState()
+{
+   RangeDefined      = false;
+   BreakoutConfirmed = false;
+   RetestConfirmed   = false;
+   TradeDoneToday    = false;
+   RefHigh           = 0.0;
+   RefLow            = 0.0;
+
+   ObjectDelete(0, "ORB_RefHigh");
+   ObjectDelete(0, "ORB_RefLow");
+
+   Print("--- DAILY RESET --- All states cleared.");
+}
+
+//+------------------------------------------------------------------+
+//| DetectAndSetReferenceM15 - find 09:00 M15 candle (closed)        |
+//+------------------------------------------------------------------+
+void DetectAndSetReferenceM15()
+{
+   if(RangeDefined)
+      return;
+
+   // Look for the M15 bar whose open time matches RefHour:RefMinute today
+   datetime serverTime = TimeCurrent();
+   MqlDateTime dt;
+   TimeToStruct(serverTime, dt);
+
+   // Build target time for today's reference candle
+   dt.hour = RefHour;
+   dt.min  = RefMinute;
+   dt.sec  = 0;
+   datetime refBarTime = StructToTime(dt);
+
+   // The M15 candle closes 15 min later
+   datetime refCloseTime = refBarTime + 15 * 60;
+
+   // Only proceed if current server time is past the close of the reference candle
+   if(serverTime < refCloseTime)
+      return;
+
+   // Find the bar index on M15 whose open time matches refBarTime
+   int shift = iBarShift(_Symbol, PERIOD_M15, refBarTime, true);
+   if(shift < 0)
    {
-      if(symbolDataArray[i].atrHandle != INVALID_HANDLE)
-         IndicatorRelease(symbolDataArray[i].atrHandle);
+      Print("DetectAndSetReferenceM15: Cannot find M15 bar at ", TimeToString(refBarTime));
+      return;
    }
 
-   if(EnableVisualMarkers)
-      ObjectsDeleteAll(0, "ORB_");
+   // Must be a completed bar (shift >= 1 means it's not the current forming bar)
+   // But if shift == 0, the bar might still be forming
+   datetime barOpenTime = iTime(_Symbol, PERIOD_M15, shift);
+   if(barOpenTime != refBarTime)
+   {
+      Print("DetectAndSetReferenceM15: M15 bar time mismatch. Expected: ",
+            TimeToString(refBarTime), " Got: ", TimeToString(barOpenTime));
+      return;
+   }
 
-   Print("TSM Opening Range Breakout deinitialized");
+   // Ensure this bar is closed (current time must be >= barOpenTime + 15 min)
+   if(serverTime < barOpenTime + 15 * 60)
+   {
+      Print("DetectAndSetReferenceM15: Reference M15 bar not yet closed.");
+      return;
+   }
+
+   RefHigh = iHigh(_Symbol, PERIOD_M15, shift);
+   RefLow  = iLow(_Symbol, PERIOD_M15, shift);
+   RangeDefined = true;
+
+   Print("=== M15 REFERENCE SET ===");
+   Print("  Time: ", TimeToString(barOpenTime));
+   Print("  RefHigh: ", DoubleToString(RefHigh, _Digits));
+   Print("  RefLow:  ", DoubleToString(RefLow, _Digits));
+
+   // Draw optional lines
+   if(DrawRefLines)
+   {
+      ObjectDelete(0, "ORB_RefHigh");
+      ObjectDelete(0, "ORB_RefLow");
+
+      ObjectCreate(0, "ORB_RefHigh", OBJ_HLINE, 0, 0, RefHigh);
+      ObjectSetInteger(0, "ORB_RefHigh", OBJPROP_COLOR, clrLimeGreen);
+      ObjectSetInteger(0, "ORB_RefHigh", OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(0, "ORB_RefHigh", OBJPROP_WIDTH, 1);
+
+      ObjectCreate(0, "ORB_RefLow", OBJ_HLINE, 0, 0, RefLow);
+      ObjectSetInteger(0, "ORB_RefLow", OBJPROP_COLOR, clrRed);
+      ObjectSetInteger(0, "ORB_RefLow", OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(0, "ORB_RefLow", OBJPROP_WIDTH, 1);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| IsNewClosedM5Bar - check if a new M5 bar just closed             |
+//+------------------------------------------------------------------+
+bool IsNewClosedM5Bar()
+{
+   datetime barTime = iTime(_Symbol, PERIOD_M5, 0);
+   if(barTime == 0)
+      return false;
+
+   if(barTime != LastM5BarTime)
+   {
+      LastM5BarTime = barTime;
+      return true;
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| CheckBreakoutM5 - bar[1] close > RefHigh                         |
+//+------------------------------------------------------------------+
+void CheckBreakoutM5()
+{
+   if(BreakoutConfirmed)
+      return;
+
+   double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
+   if(closeBar1 > RefHigh)
+   {
+      BreakoutConfirmed = true;
+      Print("=== BREAKOUT CONFIRMED ===");
+      Print("  M5 bar[1] Close: ", DoubleToString(closeBar1, _Digits),
+            " > RefHigh: ", DoubleToString(RefHigh, _Digits));
+   }
+}
+
+//+------------------------------------------------------------------+
+//| CheckRetestM5 - bar[1] low touches RefHigh zone                  |
+//+------------------------------------------------------------------+
+void CheckRetestM5()
+{
+   if(RetestConfirmed)
+      return;
+
+   double lowBar1  = iLow(_Symbol, PERIOD_M5, 1);
+   double tolerance = RetestTolerancePoints * _Point;
+
+   // Retest = price came back down to RefHigh zone
+   // Low of bar must be within [RefHigh - tolerance, RefHigh + tolerance]
+   if(lowBar1 <= RefHigh + tolerance && lowBar1 >= RefHigh - tolerance)
+   {
+      RetestConfirmed = true;
+      Print("=== RETEST CONFIRMED ===");
+      Print("  M5 bar[1] Low: ", DoubleToString(lowBar1, _Digits),
+            " in zone [", DoubleToString(RefHigh - tolerance, _Digits),
+            " , ", DoubleToString(RefHigh + tolerance, _Digits), "]");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| CheckBullishConfirmationM5 - bar[1] is bullish + close > RefHigh |
+//+------------------------------------------------------------------+
+bool CheckBullishConfirmationM5()
+{
+   double openBar1  = iOpen(_Symbol, PERIOD_M5, 1);
+   double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
+
+   if(closeBar1 > openBar1 && closeBar1 > RefHigh)
+   {
+      Print("=== BULLISH CONFIRMATION ===");
+      Print("  M5 bar[1] Open: ", DoubleToString(openBar1, _Digits),
+            " Close: ", DoubleToString(closeBar1, _Digits),
+            " > RefHigh: ", DoubleToString(RefHigh, _Digits));
+      return true;
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| CalculateRecentLowSL - lowest low of N closed M5 bars - buffer   |
+//+------------------------------------------------------------------+
+double CalculateRecentLowSL()
+{
+   double lowestLow = DBL_MAX;
+   // Start from bar[1] (last closed) to bar[LookbackSwing]
+   for(int i = 1; i <= LookbackSwing; i++)
+   {
+      double low_i = iLow(_Symbol, PERIOD_M5, i);
+      if(low_i < lowestLow)
+         lowestLow = low_i;
+   }
+
+   double sl = lowestLow - BufferSLPoints * _Point;
+   // Normalize to tick size
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize > 0)
+      sl = NormalizeDouble(MathFloor(sl / tickSize) * tickSize, _Digits);
+   else
+      sl = NormalizeDouble(sl, _Digits);
+
+   Print("  CalculateRecentLowSL: LowestLow=", DoubleToString(lowestLow, _Digits),
+         " Buffer=", BufferSLPoints, "pts => SL=", DoubleToString(sl, _Digits));
+   return sl;
+}
+
+//+------------------------------------------------------------------+
+//| CalculateTPFromPips - entry + fixed pips                         |
+//+------------------------------------------------------------------+
+double CalculateTPFromPips(double entryPrice)
+{
+   double tp = entryPrice + FixedTP_Pips * PipMultiplier() * _Point;
+   // Normalize to tick size
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize > 0)
+      tp = NormalizeDouble(MathRound(tp / tickSize) * tickSize, _Digits);
+   else
+      tp = NormalizeDouble(tp, _Digits);
+
+   Print("  CalculateTPFromPips: Entry=", DoubleToString(entryPrice, _Digits),
+         " + ", FixedTP_Pips, " pips => TP=", DoubleToString(tp, _Digits));
+   return tp;
+}
+
+//+------------------------------------------------------------------+
+//| HasTradedToday - check if magic already has a trade today        |
+//+------------------------------------------------------------------+
+bool HasTradedToday()
+{
+   MqlDateTime dtNow;
+   TimeToStruct(TimeCurrent(), dtNow);
+   int today = dtNow.day_of_year;
+
+   // Check open positions
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(PositionGetSymbol(i) == _Symbol)
+      {
+         if((int)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+            return true;
+      }
+   }
+
+   // Check closed deals today
+   datetime startOfDay = StringToTime(TimeToString(TimeCurrent(), TIME_DATE));
+   HistorySelect(startOfDay, TimeCurrent());
+   int totalDeals = HistoryDealsTotal();
+   for(int i = totalDeals - 1; i >= 0; i--)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0) continue;
+      if(HistoryDealGetString(ticket, DEAL_SYMBOL) != _Symbol) continue;
+      if((int)HistoryDealGetInteger(ticket, DEAL_MAGIC) != MagicNumber) continue;
+      int dealEntry = (int)HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(dealEntry == DEAL_ENTRY_IN)
+         return true;
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| ExecuteBuyOrder - place BUY market order with SL/TP              |
+//+------------------------------------------------------------------+
+void ExecuteBuyOrder()
+{
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(ask <= 0)
+   {
+      Print("ExecuteBuyOrder: Invalid ASK price.");
+      return;
+   }
+
+   double sl = CalculateRecentLowSL();
+   double tp = CalculateTPFromPips(ask);
+
+   // Validate SL < entry
+   if(sl >= ask)
+   {
+      Print("ExecuteBuyOrder: REJECTED - SL (", DoubleToString(sl, _Digits),
+            ") >= Ask (", DoubleToString(ask, _Digits), ")");
+      return;
+   }
+
+   // Validate minimum SL distance
+   double slDistPoints = (ask - sl) / _Point;
+   if(slDistPoints < MinSLPoints)
+   {
+      Print("ExecuteBuyOrder: REJECTED - SL distance (", DoubleToString(slDistPoints, 0),
+            " pts) < MinSLPoints (", MinSLPoints, ")");
+      return;
+   }
+
+   // Check broker stops level
+   int stopsLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   if(stopsLevel > 0)
+   {
+      double minDist = stopsLevel * _Point;
+      if((ask - sl) < minDist)
+      {
+         Print("ExecuteBuyOrder: REJECTED - SL too close to price. Min stops level: ",
+               stopsLevel, " pts");
+         return;
+      }
+      if((tp - ask) < minDist)
+      {
+         Print("ExecuteBuyOrder: REJECTED - TP too close to price. Min stops level: ",
+               stopsLevel, " pts");
+         return;
+      }
+   }
+
+   Print("=== SENDING BUY ORDER ===");
+   Print("  Ask: ", DoubleToString(ask, _Digits));
+   Print("  SL:  ", DoubleToString(sl, _Digits), " (", DoubleToString(slDistPoints, 0), " pts)");
+   Print("  TP:  ", DoubleToString(tp, _Digits));
+   Print("  Lots: ", DoubleToString(Lots, 2));
+
+   if(trade.Buy(Lots, _Symbol, ask, sl, tp, "ORB_BUY"))
+   {
+      uint retcode = trade.ResultRetcode();
+      if(retcode == TRADE_RETCODE_DONE || retcode == TRADE_RETCODE_PLACED)
+      {
+         TradeDoneToday = true;
+         Print("=== BUY ORDER EXECUTED === Ticket: ", trade.ResultOrder(),
+               " Retcode: ", retcode);
+      }
+      else
+      {
+         Print("ExecuteBuyOrder: Order placed but retcode=", retcode,
+               " Comment: ", trade.ResultComment());
+      }
+   }
+   else
+   {
+      Print("ExecuteBuyOrder: FAILED - Retcode: ", trade.ResultRetcode(),
+            " Comment: ", trade.ResultComment());
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -219,617 +411,61 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   for(int s = 0; s < ArraySize(symbolDataArray); s++)
+   // --- Day change detection ---
+   MqlDateTime dtNow;
+   TimeToStruct(TimeCurrent(), dtNow);
+   int today = dtNow.day_of_year;
+
+   if(today != CurrentDay)
    {
-      ProcessSymbol(s);
+      CurrentDay = today;
+      ResetDailyState();
+      Print("New server day: ", TimeToString(TimeCurrent(), TIME_DATE));
    }
-}
 
-//+------------------------------------------------------------------+
-//| Check if current time matches opening range start                |
-//+------------------------------------------------------------------+
-bool IsORBStartBar(const MqlDateTime &dt)
-{
-   return (dt.hour == ORBStartHour && dt.min == ORBStartMinute);
-}
+   // --- Step 1: Detect M15 reference (once per day) ---
+   if(!RangeDefined)
+   {
+      DetectAndSetReferenceM15();
+      if(!RangeDefined)
+         return;  // Wait until reference candle closes
+   }
 
-//+------------------------------------------------------------------+
-//| Check if current time is past the opening range                  |
-//+------------------------------------------------------------------+
-bool IsPastORBPeriod(const MqlDateTime &dt)
-{
-   int currentMinutes = dt.hour * 60 + dt.min;
-   int endMinutes     = ORBStartHour * 60 + ORBStartMinute + ORBDurationBars * 5;
-
-   return (currentMinutes >= endMinutes);
-}
-
-//+------------------------------------------------------------------+
-//| Check if session has ended                                       |
-//+------------------------------------------------------------------+
-bool IsSessionEnd(const MqlDateTime &dt)
-{
-   int currentMinutes = dt.hour * 60 + dt.min;
-   int endMinutes     = SessionEndHour * 60 + SessionEndMinute;
-
-   return (currentMinutes >= endMinutes);
-}
-
-//+------------------------------------------------------------------+
-//| Get supported order filling mode for a symbol                    |
-//+------------------------------------------------------------------+
-ENUM_ORDER_TYPE_FILLING GetFillingMode(string sym)
-{
-   long fillMode = SymbolInfoInteger(sym, SYMBOL_FILLING_MODE);
-   if((fillMode & 1) != 0)         // FOK supported
-      return(ORDER_FILLING_FOK);
-   if((fillMode & 2) != 0)         // IOC supported
-      return(ORDER_FILLING_IOC);
-   return(ORDER_FILLING_RETURN);    // RETURN is always available
-}
-
-//+------------------------------------------------------------------+
-//| Normalize price to symbol tick size                              |
-//+------------------------------------------------------------------+
-double NormalizePrice(string sym, double price)
-{
-   double tickSize = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
-   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   if(tickSize > 0)
-      return(NormalizeDouble(MathRound(price / tickSize) * tickSize, digits));
-   return(NormalizeDouble(price, digits));
-}
-
-//+------------------------------------------------------------------+
-//| Process individual symbol                                        |
-//+------------------------------------------------------------------+
-void ProcessSymbol(int idx)
-{
-   // Check if new bar formed on M5
-   datetime currentBarTime = iTime(symbolDataArray[idx].symbol, PERIOD_M5, 0);
-
-   if(currentBarTime == symbolDataArray[idx].lastBarTime)
+   // --- Already traded today? ---
+   if(TradeDoneToday)
       return;
 
-   symbolDataArray[idx].lastBarTime = currentBarTime;
+   // --- Step 2: Process only on new closed M5 bar ---
+   if(!IsNewClosedM5Bar())
+      return;
 
-   MqlDateTime dt;
-   TimeToStruct(currentBarTime, dt);
-
-   // Reset state at start of new trading day
-   datetime currentDate = iTime(symbolDataArray[idx].symbol, PERIOD_D1, 0);
-   if(currentDate != symbolDataArray[idx].lastTradeDate)
+   // --- Step 3: Check breakout ---
+   if(!BreakoutConfirmed)
    {
-      if(symbolDataArray[idx].lastTradeDate != 0)
+      CheckBreakoutM5();
+      return;  // Wait for next bar after breakout
+   }
+
+   // --- Step 4: Check retest ---
+   if(!RetestConfirmed)
+   {
+      CheckRetestM5();
+      return;  // Wait for next bar after retest
+   }
+
+   // --- Step 5: Check bullish confirmation and execute ---
+   if(CheckBullishConfirmationM5())
+   {
+      // Double-check no trade today (history + positions)
+      if(!HasTradedToday())
       {
-         symbolDataArray[idx].state             = WAITING_SESSION;
-         symbolDataArray[idx].rangeHigh         = 0;
-         symbolDataArray[idx].rangeLow          = 0;
-         symbolDataArray[idx].rangeBarsCollected = 0;
-         symbolDataArray[idx].dailyTradeCount   = 0;
-         if(EnableLogging)
-            Print("=== NEW TRADING DAY: ", symbolDataArray[idx].symbol, " | ",
-                  TimeToString(currentDate, TIME_DATE), " ===");
-      }
-      symbolDataArray[idx].lastTradeDate = currentDate;
-   }
-
-   // Close positions at session end
-   if(IsSessionEnd(dt) && CloseAtSessionEnd)
-   {
-      ClosePositionsForSymbol(idx);
-      if(symbolDataArray[idx].state != SESSION_DONE)
-      {
-         symbolDataArray[idx].state = SESSION_DONE;
-         if(EnableLogging)
-            Print("SESSION END [", symbolDataArray[idx].symbol, "]: All positions closed");
-      }
-      return;
-   }
-
-   if(EnableLogging && !isBacktest)
-   {
-      Print("=== ", symbolDataArray[idx].symbol, " | ", TimeToString(TimeCurrent()), " ===");
-      Print("State: ", EnumToString(symbolDataArray[idx].state));
-   }
-
-   // State machine
-   switch(symbolDataArray[idx].state)
-   {
-      case WAITING_SESSION:
-         if(IsORBStartBar(dt))
-         {
-            // Start building the opening range
-            symbolDataArray[idx].state = BUILDING_RANGE;
-            symbolDataArray[idx].rangeStartTime    = currentBarTime;
-            symbolDataArray[idx].rangeBarsCollected = 0;
-
-            if(EnableLogging)
-               Print(">>> STATE CHANGE [", symbolDataArray[idx].symbol,
-                     "]: WAITING_SESSION -> BUILDING_RANGE");
-         }
-         break;
-
-      case BUILDING_RANGE:
-         if(IsPastORBPeriod(dt))
-         {
-            // Calculate range from completed bars in the ORB window
-            double highs[], lows[];
-            ArraySetAsSeries(highs, true);
-            ArraySetAsSeries(lows, true);
-
-            int copied_h = CopyHigh(symbolDataArray[idx].symbol, PERIOD_M5, 1, ORBDurationBars, highs);
-            int copied_l = CopyLow(symbolDataArray[idx].symbol, PERIOD_M5, 1, ORBDurationBars, lows);
-
-            if(copied_h < ORBDurationBars || copied_l < ORBDurationBars)
-            {
-               if(EnableLogging)
-                  Print("ERROR [", symbolDataArray[idx].symbol,
-                        "]: Failed to copy bar data for range (got ", copied_h, "/", copied_l,
-                        ", need ", ORBDurationBars, ")");
-               symbolDataArray[idx].state = SESSION_DONE;
-               break;
-            }
-
-            symbolDataArray[idx].rangeHigh = highs[ArrayMaximum(highs)];
-            symbolDataArray[idx].rangeLow  = lows[ArrayMinimum(lows)];
-            symbolDataArray[idx].rangeBarsCollected = ORBDurationBars;
-
-            // Validate opening range against ATR
-            if(ValidateOpeningRange(idx))
-            {
-               symbolDataArray[idx].state = WATCHING_BREAKOUT;
-
-               double rangeSize = symbolDataArray[idx].rangeHigh - symbolDataArray[idx].rangeLow;
-
-               if(EnableLogging)
-               {
-                  Print(">>> STATE CHANGE [", symbolDataArray[idx].symbol,
-                        "]: BUILDING_RANGE -> WATCHING_BREAKOUT");
-                  Print("  Range High: ", DoubleToString(symbolDataArray[idx].rangeHigh, _Digits));
-                  Print("  Range Low:  ", DoubleToString(symbolDataArray[idx].rangeLow, _Digits));
-                  Print("  Range Size: ", DoubleToString(rangeSize, _Digits));
-               }
-
-               SendNotificationAlert("Opening Range Set [" + symbolDataArray[idx].symbol +
-                     "] H: " + DoubleToString(symbolDataArray[idx].rangeHigh, _Digits) +
-                     " L: " + DoubleToString(symbolDataArray[idx].rangeLow, _Digits));
-
-               if(EnableVisualMarkers)
-                  DrawOpeningRange(idx);
-            }
-            else
-            {
-               symbolDataArray[idx].state = SESSION_DONE;
-               if(EnableLogging)
-                  Print(">>> RANGE REJECTED [", symbolDataArray[idx].symbol,
-                        "]: Failed ATR validation, skipping today");
-            }
-         }
-         break;
-
-      case WATCHING_BREAKOUT:
-         if(!IsSessionEnd(dt))
-         {
-            CheckBreakout(idx);
-         }
-         break;
-
-      case SESSION_DONE:
-         // Nothing to do until next day
-         break;
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Validate opening range size against ATR                          |
-//+------------------------------------------------------------------+
-bool ValidateOpeningRange(int idx)
-{
-   double atr[];
-   ArraySetAsSeries(atr, true);
-   if(CopyBuffer(symbolDataArray[idx].atrHandle, 0, 1, 1, atr) <= 0)
-   {
-      if(EnableLogging)
-         Print("ERROR [", symbolDataArray[idx].symbol, "]: Failed to copy ATR buffer");
-      return false;
-   }
-   double atrValue = atr[0];
-   double rangeSize = symbolDataArray[idx].rangeHigh - symbolDataArray[idx].rangeLow;
-
-   if(rangeSize < MinATRMult * atrValue)
-   {
-      if(EnableLogging)
-         Print("  REJECTED [", symbolDataArray[idx].symbol, "]: Range too small (",
-               DoubleToString(rangeSize, _Digits), " < ",
-               DoubleToString(MinATRMult * atrValue, _Digits), ")");
-      return false;
-   }
-
-   if(rangeSize > MaxATRMult * atrValue)
-   {
-      if(EnableLogging)
-         Print("  REJECTED [", symbolDataArray[idx].symbol, "]: Range too large (",
-               DoubleToString(rangeSize, _Digits), " > ",
-               DoubleToString(MaxATRMult * atrValue, _Digits), ")");
-      return false;
-   }
-
-   return true;
-}
-
-//+------------------------------------------------------------------+
-//| Check for breakout above or below the opening range              |
-//+------------------------------------------------------------------+
-void CheckBreakout(int idx)
-{
-   // Skip if max daily trades reached
-   if(symbolDataArray[idx].dailyTradeCount >= MaxDailyTrades)
-      return;
-
-   // Skip if position already open for this symbol
-   if(HasOpenPosition(idx))
-      return;
-
-   // If only first breakout allowed and we already traded
-   if(TradeFirstBreakout && symbolDataArray[idx].dailyTradeCount > 0)
-      return;
-
-   // Check spread
-   double ask = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_BID);
-   double point = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_POINT);
-
-   if(point <= 0)
-      return;
-
-   int currentSpread = (int)((ask - bid) / point);
-   if(currentSpread > MaxSpreadPoints)
-   {
-      if(EnableLogging)
-         Print("  SPREAD FILTER [", symbolDataArray[idx].symbol, "]: ",
-               currentSpread, " > ", MaxSpreadPoints);
-      return;
-   }
-
-   double bufferValue = BreakoutBuffer * point;
-
-   // Bullish breakout: close above opening range high
-   double close0 = iClose(symbolDataArray[idx].symbol, PERIOD_M5, 1);
-
-   if(TradeBullish && close0 > (symbolDataArray[idx].rangeHigh + bufferValue))
-   {
-      if(EnableLogging)
-         Print("BREAKOUT UP [", symbolDataArray[idx].symbol, "]: Close ",
-               DoubleToString(close0, _Digits), " > Range High ",
-               DoubleToString(symbolDataArray[idx].rangeHigh, _Digits));
-
-      ExecuteBreakoutTrade(idx, ORDER_TYPE_BUY);
-      return;
-   }
-
-   // Bearish breakout: close below opening range low
-   if(TradeBearish && close0 < (symbolDataArray[idx].rangeLow - bufferValue))
-   {
-      if(EnableLogging)
-         Print("BREAKOUT DOWN [", symbolDataArray[idx].symbol, "]: Close ",
-               DoubleToString(close0, _Digits), " < Range Low ",
-               DoubleToString(symbolDataArray[idx].rangeLow, _Digits));
-
-      ExecuteBreakoutTrade(idx, ORDER_TYPE_SELL);
-      return;
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Check if there is an open position for this symbol               |
-//+------------------------------------------------------------------+
-bool HasOpenPosition(int idx)
-{
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(PositionGetSymbol(i) == symbolDataArray[idx].symbol)
-      {
-         if((int)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
-            return true;
-      }
-   }
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| Execute breakout trade                                           |
-//+------------------------------------------------------------------+
-void ExecuteBreakoutTrade(int idx, ENUM_ORDER_TYPE orderType)
-{
-   double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double riskAmount     = accountBalance * (RiskPercent / 100.0);
-   double point          = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_POINT);
-
-   // Entry price
-   double entryPrice;
-   if(orderType == ORDER_TYPE_BUY)
-      entryPrice = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_ASK);
-   else
-      entryPrice = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_BID);
-
-   // Stop loss at opposite side of opening range
-   double stopLoss;
-   if(orderType == ORDER_TYPE_BUY)
-      stopLoss = symbolDataArray[idx].rangeLow;
-   else
-      stopLoss = symbolDataArray[idx].rangeHigh;
-
-   // Take profit based on risk:reward ratio
-   double slDistance = MathAbs(entryPrice - stopLoss);
-   double tpDistance = slDistance * RewardRiskRatio;
-
-   double takeProfit;
-   if(orderType == ORDER_TYPE_BUY)
-      takeProfit = entryPrice + tpDistance;
-   else
-      takeProfit = entryPrice - tpDistance;
-
-   // Normalize prices to symbol tick size
-   string sym = symbolDataArray[idx].symbol;
-   entryPrice = NormalizePrice(sym, entryPrice);
-   stopLoss   = NormalizePrice(sym, stopLoss);
-   takeProfit = NormalizePrice(sym, takeProfit);
-
-   // Calculate lot size
-   double tickValue = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize  = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_TRADE_TICK_SIZE);
-
-   if(tickSize <= 0 || point <= 0 || tickValue <= 0)
-   {
-      if(EnableLogging)
-         Print("ERROR [", symbolDataArray[idx].symbol, "]: Invalid tickSize, tickValue, or point");
-      return;
-   }
-
-   double slPoints = slDistance / point;
-   if(slPoints <= 0)
-   {
-      if(EnableLogging)
-         Print("ERROR [", symbolDataArray[idx].symbol, "]: SL distance is zero");
-      return;
-   }
-
-   double lotSize = riskAmount / (slPoints * tickValue / tickSize);
-
-   // Normalize lot size
-   double minLot  = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_VOLUME_MIN);
-   double maxLot  = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_VOLUME_MAX);
-   double lotStep = SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_VOLUME_STEP);
-
-   if(lotStep > 0)
-      lotSize = MathFloor(lotSize / lotStep) * lotStep;
-
-   lotSize = MathMax(minLot, MathMin(maxLot, lotSize));
-
-   // Execute trade
-   string comment = "ORB_" + (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL");
-
-   MqlTradeRequest request;
-   MqlTradeResult  result;
-   ZeroMemory(request);
-   ZeroMemory(result);
-
-   request.action   = TRADE_ACTION_DEAL;
-   request.symbol   = symbolDataArray[idx].symbol;
-   request.volume   = lotSize;
-   request.type     = orderType;
-   request.price    = entryPrice;
-   request.sl       = stopLoss;
-   request.tp       = takeProfit;
-   request.deviation = 10;
-   request.magic    = MagicNumber;
-   request.comment  = comment;
-   request.type_filling = GetFillingMode(symbolDataArray[idx].symbol);
-
-   if(OrderSend(request, result))
-   {
-      if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
-      {
-         symbolDataArray[idx].dailyTradeCount++;
-
-         if(EnableLogging)
-         {
-            Print("========================================");
-            Print("TRADE EXECUTED [", symbolDataArray[idx].symbol, "]!");
-            Print("  Type: ", (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"));
-            Print("  Price: ", DoubleToString(entryPrice, _Digits));
-            Print("  Lot size: ", DoubleToString(lotSize, 2));
-            Print("  Stop loss: ", DoubleToString(stopLoss, _Digits));
-            Print("  Take profit: ", DoubleToString(takeProfit, _Digits));
-            Print("  Risk: $", DoubleToString(riskAmount, 2));
-            Print("  R:R ratio: 1:", DoubleToString(RewardRiskRatio, 1));
-            Print("========================================");
-         }
-
-         string tradeType = (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL");
-         SendNotificationAlert("TRADE EXECUTED [" + symbolDataArray[idx].symbol + "] - " + tradeType +
-               " | Price: " + DoubleToString(entryPrice, _Digits) +
-               " | Lot: " + DoubleToString(lotSize, 2) +
-               " | SL: " + DoubleToString(stopLoss, _Digits) +
-               " | TP: " + DoubleToString(takeProfit, _Digits));
-
-         if(EnableVisualMarkers)
-            MarkBreakout(idx, orderType, entryPrice);
+         ExecuteBuyOrder();
       }
       else
       {
-         if(EnableLogging)
-            Print("ERROR [", symbolDataArray[idx].symbol, "]: Order failed - ",
-                  result.comment, " (", result.retcode, ")");
-
-         SendNotificationAlert("TRADE FAILED [" + symbolDataArray[idx].symbol + "] - " +
-               result.comment + " (Code: " + IntegerToString(result.retcode) + ")");
+         TradeDoneToday = true;
+         Print("Trade already exists today - skipping.");
       }
    }
-   else
-   {
-      if(EnableLogging)
-         Print("ERROR [", symbolDataArray[idx].symbol, "]: OrderSend failed - ", GetLastError());
-
-      SendNotificationAlert("ORDER SEND FAILED [" + symbolDataArray[idx].symbol + "] - Error: " +
-            IntegerToString(GetLastError()));
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Close all positions for a symbol                                 |
-//+------------------------------------------------------------------+
-void ClosePositionsForSymbol(int idx)
-{
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      if(PositionGetSymbol(i) == symbolDataArray[idx].symbol)
-      {
-         if((int)PositionGetInteger(POSITION_MAGIC) == MagicNumber)
-         {
-            ulong ticket = (ulong)PositionGetInteger(POSITION_TICKET);
-            double volume = PositionGetDouble(POSITION_VOLUME);
-            ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-
-            MqlTradeRequest request;
-            MqlTradeResult  result;
-            ZeroMemory(request);
-            ZeroMemory(result);
-
-            request.action   = TRADE_ACTION_DEAL;
-            request.symbol   = symbolDataArray[idx].symbol;
-            request.volume   = volume;
-            request.type     = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-            request.price    = (posType == POSITION_TYPE_BUY) ?
-                               SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_BID) :
-                               SymbolInfoDouble(symbolDataArray[idx].symbol, SYMBOL_ASK);
-            request.position = ticket;
-            request.deviation = 10;
-            request.magic    = MagicNumber;
-            request.comment  = "ORB_CLOSE";
-            request.type_filling = GetFillingMode(symbolDataArray[idx].symbol);
-
-            if(OrderSend(request, result))
-            {
-               if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED)
-               {
-                  if(EnableLogging)
-                     Print("CLOSED position [", symbolDataArray[idx].symbol, "] ticket: ", ticket);
-               }
-               else
-               {
-                  if(EnableLogging)
-                     Print("ERROR closing position [", symbolDataArray[idx].symbol,
-                           "] ticket: ", ticket, " retcode: ", result.retcode);
-               }
-            }
-            else
-            {
-               if(EnableLogging)
-                  Print("ERROR closing position [", symbolDataArray[idx].symbol,
-                        "] ticket: ", ticket, " error: ", GetLastError());
-            }
-         }
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Draw opening range rectangle on chart                            |
-//+------------------------------------------------------------------+
-void DrawOpeningRange(int idx)
-{
-   string objName = "ORB_Range_" + symbolDataArray[idx].symbol + "_" +
-                    TimeToString(symbolDataArray[idx].rangeStartTime);
-
-   if(ObjectFind(0, objName) >= 0)
-      ObjectDelete(0, objName);
-
-   datetime endTime = symbolDataArray[idx].rangeStartTime +
-                      ORBDurationBars * PeriodSeconds(PERIOD_M5);
-
-   ObjectCreate(0, objName, OBJ_RECTANGLE, 0,
-                symbolDataArray[idx].rangeStartTime, symbolDataArray[idx].rangeHigh,
-                endTime, symbolDataArray[idx].rangeLow);
-
-   ObjectSetInteger(0, objName, OBJPROP_COLOR, clrDodgerBlue);
-   ObjectSetInteger(0, objName, OBJPROP_STYLE, STYLE_SOLID);
-   ObjectSetInteger(0, objName, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, objName, OBJPROP_BACK, true);
-   ObjectSetInteger(0, objName, OBJPROP_FILL, true);
-
-   // Draw breakout levels as horizontal lines extending to session end
-   MqlDateTime dtEnd;
-   TimeToStruct(symbolDataArray[idx].rangeStartTime, dtEnd);
-   dtEnd.hour = SessionEndHour;
-   dtEnd.min  = SessionEndMinute;
-   datetime sessionEnd = StructToTime(dtEnd);
-
-   // High breakout line
-   string highLine = "ORB_High_" + symbolDataArray[idx].symbol + "_" +
-                     TimeToString(symbolDataArray[idx].rangeStartTime);
-   if(ObjectFind(0, highLine) >= 0)
-      ObjectDelete(0, highLine);
-
-   ObjectCreate(0, highLine, OBJ_TREND, 0,
-                endTime, symbolDataArray[idx].rangeHigh,
-                sessionEnd, symbolDataArray[idx].rangeHigh);
-   ObjectSetInteger(0, highLine, OBJPROP_COLOR, clrLimeGreen);
-   ObjectSetInteger(0, highLine, OBJPROP_STYLE, STYLE_DASH);
-   ObjectSetInteger(0, highLine, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, highLine, OBJPROP_RAY_RIGHT, false);
-
-   // Low breakout line
-   string lowLine = "ORB_Low_" + symbolDataArray[idx].symbol + "_" +
-                    TimeToString(symbolDataArray[idx].rangeStartTime);
-   if(ObjectFind(0, lowLine) >= 0)
-      ObjectDelete(0, lowLine);
-
-   ObjectCreate(0, lowLine, OBJ_TREND, 0,
-                endTime, symbolDataArray[idx].rangeLow,
-                sessionEnd, symbolDataArray[idx].rangeLow);
-   ObjectSetInteger(0, lowLine, OBJPROP_COLOR, clrRed);
-   ObjectSetInteger(0, lowLine, OBJPROP_STYLE, STYLE_DASH);
-   ObjectSetInteger(0, lowLine, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, lowLine, OBJPROP_RAY_RIGHT, false);
-}
-
-//+------------------------------------------------------------------+
-//| Mark breakout trade on chart                                     |
-//+------------------------------------------------------------------+
-void MarkBreakout(int idx, ENUM_ORDER_TYPE orderType, double price)
-{
-   string objName = "ORB_Entry_" + symbolDataArray[idx].symbol + "_" +
-                    TimeToString(TimeCurrent());
-
-   if(ObjectFind(0, objName) >= 0)
-      ObjectDelete(0, objName);
-
-   ObjectCreate(0, objName, OBJ_ARROW, 0, TimeCurrent(), price);
-
-   if(orderType == ORDER_TYPE_BUY)
-   {
-      ObjectSetInteger(0, objName, OBJPROP_ARROWCODE, 233); // Up arrow
-      ObjectSetInteger(0, objName, OBJPROP_COLOR, clrLimeGreen);
-   }
-   else
-   {
-      ObjectSetInteger(0, objName, OBJPROP_ARROWCODE, 234); // Down arrow
-      ObjectSetInteger(0, objName, OBJPROP_COLOR, clrRed);
-   }
-
-   ObjectSetInteger(0, objName, OBJPROP_WIDTH, 2);
-
-   string labelName = objName + "_Label";
-   if(ObjectFind(0, labelName) >= 0)
-      ObjectDelete(0, labelName);
-
-   ObjectCreate(0, labelName, OBJ_TEXT, 0, TimeCurrent(), price);
-   ObjectSetString(0, labelName, OBJPROP_TEXT,
-                   "ORB " + (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"));
-   ObjectSetInteger(0, labelName, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE, 10);
-   ObjectSetInteger(0, labelName, OBJPROP_ANCHOR, ANCHOR_BOTTOM);
 }
 //+------------------------------------------------------------------+
