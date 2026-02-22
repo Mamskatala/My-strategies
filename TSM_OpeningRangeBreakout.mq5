@@ -204,7 +204,7 @@ void CheckBreakoutM5()
 }
 
 //+------------------------------------------------------------------+
-//| CheckRetestM5 - bar[1] low touches RefHigh zone                  |
+//| CheckRetestM5 - bar[1] low pulls back to RefHigh zone           |
 //+------------------------------------------------------------------+
 void CheckRetestM5()
 {
@@ -214,15 +214,23 @@ void CheckRetestM5()
    double lowBar1  = iLow(_Symbol, PERIOD_M5, 1);
    double tolerance = RetestTolerancePoints * _Point;
 
-   // Retest = price came back down to RefHigh zone
-   // Low of bar must be within [RefHigh - tolerance, RefHigh + tolerance]
-   if(lowBar1 <= RefHigh + tolerance && lowBar1 >= RefHigh - tolerance)
+   // Retest = price pulled back DOWN to RefHigh zone (true pullback)
+   // Low must be AT or BELOW RefHigh (proving price actually came back down)
+   // with tolerance on the downside only: [RefHigh - tolerance, RefHigh]
+   if(lowBar1 <= RefHigh && lowBar1 >= RefHigh - tolerance)
    {
       RetestConfirmed = true;
-      Print("=== RETEST CONFIRMED ===");
+      Print("=== RETEST (PULLBACK) CONFIRMED ===");
       Print("  M5 bar[1] Low: ", DoubleToString(lowBar1, _Digits),
-            " in zone [", DoubleToString(RefHigh - tolerance, _Digits),
-            " , ", DoubleToString(RefHigh + tolerance, _Digits), "]");
+            " pulled back to RefHigh zone [", DoubleToString(RefHigh - tolerance, _Digits),
+            " , ", DoubleToString(RefHigh, _Digits), "]");
+   }
+   else
+   {
+      Print("  Retest check: bar[1] Low=", DoubleToString(lowBar1, _Digits),
+            " | RefHigh=", DoubleToString(RefHigh, _Digits),
+            " | Zone=[", DoubleToString(RefHigh - tolerance, _Digits),
+            ",", DoubleToString(RefHigh, _Digits), "] -> NOT yet");
    }
 }
 
