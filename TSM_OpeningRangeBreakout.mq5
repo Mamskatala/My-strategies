@@ -83,6 +83,43 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
+//| OnTester - custom optimization criterion                         |
+//| Returns: profit factor adjusted by recovery factor               |
+//+------------------------------------------------------------------+
+double OnTester()
+{
+   double netProfit    = TesterStatistics(STAT_PROFIT);
+   double grossProfit  = TesterStatistics(STAT_GROSS_PROFIT);
+   double grossLoss    = TesterStatistics(STAT_GROSS_LOSS);
+   double maxDrawdown  = TesterStatistics(STAT_EQUITY_DD);
+   int    totalTrades  = (int)TesterStatistics(STAT_TRADES);
+
+   // Require minimum trades for meaningful results
+   if(totalTrades < 5)
+      return 0.0;
+
+   // Profit factor (grossProfit / |grossLoss|)
+   double profitFactor = 0.0;
+   if(MathAbs(grossLoss) > 0.0)
+      profitFactor = grossProfit / MathAbs(grossLoss);
+
+   // Recovery factor (netProfit / maxDrawdown)
+   double recoveryFactor = 0.0;
+   if(maxDrawdown > 0.0)
+      recoveryFactor = netProfit / maxDrawdown;
+
+   // Custom criterion: PF * sqrt(trades) * recovery, capped for stability
+   double criterion = profitFactor * MathSqrt((double)totalTrades) * MathMax(recoveryFactor, 0.0);
+
+   Print("=== OnTester === Trades: ", totalTrades,
+         " PF: ", DoubleToString(profitFactor, 2),
+         " Recovery: ", DoubleToString(recoveryFactor, 2),
+         " Criterion: ", DoubleToString(criterion, 4));
+
+   return criterion;
+}
+
+//+------------------------------------------------------------------+
 //| ResetDailyState - reset state machine for new day                |
 //+------------------------------------------------------------------+
 void ResetDailyState()
