@@ -32,7 +32,7 @@ double RefHigh = 0.0;
 double RefLow  = 0.0;
 
 datetime LastM5BarTime  = 0;
-int      CurrentDay     = -1;
+datetime CurrentDayDate = 0;
 
 //--- Trade object
 CTrade trade;
@@ -295,10 +295,6 @@ double CalculateTPFromPips(double entryPrice)
 //+------------------------------------------------------------------+
 bool HasTradedToday()
 {
-   MqlDateTime dtNow;
-   TimeToStruct(TimeCurrent(), dtNow);
-   int today = dtNow.day_of_year;
-
    // Check open positions
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -309,8 +305,14 @@ bool HasTradedToday()
       }
    }
 
-   // Check closed deals today
-   datetime startOfDay = StringToTime(TimeToString(TimeCurrent(), TIME_DATE));
+   // Check closed deals today using date struct
+   MqlDateTime dtDay;
+   TimeToStruct(TimeCurrent(), dtDay);
+   dtDay.hour = 0;
+   dtDay.min  = 0;
+   dtDay.sec  = 0;
+   datetime startOfDay = StructToTime(dtDay);
+
    HistorySelect(startOfDay, TimeCurrent());
    int totalDeals = HistoryDealsTotal();
    for(int i = totalDeals - 1; i >= 0; i--)
@@ -386,18 +388,10 @@ void ExecuteBuyOrder()
 
    if(trade.Buy(Lots, _Symbol, ask, sl, tp, "ORB_BUY"))
    {
+      TradeDoneToday = true;
       uint retcode = trade.ResultRetcode();
-      if(retcode == TRADE_RETCODE_DONE || retcode == TRADE_RETCODE_PLACED)
-      {
-         TradeDoneToday = true;
-         Print("=== BUY ORDER EXECUTED === Ticket: ", trade.ResultOrder(),
-               " Retcode: ", retcode);
-      }
-      else
-      {
-         Print("ExecuteBuyOrder: Order placed but retcode=", retcode,
-               " Comment: ", trade.ResultComment());
-      }
+      Print("=== BUY ORDER EXECUTED === Ticket: ", trade.ResultOrder(),
+            " Retcode: ", retcode, " Comment: ", trade.ResultComment());
    }
    else
    {
@@ -411,14 +405,17 @@ void ExecuteBuyOrder()
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // --- Day change detection ---
+   // --- Day change detection (uses full date to handle year boundary) ---
    MqlDateTime dtNow;
    TimeToStruct(TimeCurrent(), dtNow);
-   int today = dtNow.day_of_year;
+   dtNow.hour = 0;
+   dtNow.min  = 0;
+   dtNow.sec  = 0;
+   datetime todayDate = StructToTime(dtNow);
 
-   if(today != CurrentDay)
+   if(todayDate != CurrentDayDate)
    {
-      CurrentDay = today;
+      CurrentDayDate = todayDate;
       ResetDailyState();
       Print("New server day: ", TimeToString(TimeCurrent(), TIME_DATE));
    }
