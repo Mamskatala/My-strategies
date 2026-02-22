@@ -5,7 +5,7 @@
 #property copyright "TSM Opening Range Breakout"
 #property link      ""
 #property version   "2.00"
-#property description "M15 Ref (09:00) + M5 Breakout/Retest/Confirm - BUY Only"
+#property description "M15 Ref (00:00) + M5 Breakout/Retest/Confirm - BUY Only"
 
 #include <Trade\Trade.mqh>
 
@@ -18,7 +18,7 @@ input int    FixedTP_Pips          = 50;     // Take Profit (pips)
 input double Lots                  = 0.10;   // Lot size
 input int    MagicNumber           = 54321;  // Magic number
 input int    MaxSlippagePoints     = 30;     // Max slippage (points)
-input int    RefHour               = 9;      // Reference M15 candle hour (server)
+input int    RefHour               = 0;      // Reference M15 candle hour (server)
 input int    RefMinute             = 0;      // Reference M15 candle minute (server)
 input bool   DrawRefLines          = true;   // Draw RefHigh / RefLow lines
 
@@ -91,7 +91,7 @@ void ResetDailyState()
 }
 
 //+------------------------------------------------------------------+
-//| DetectAndSetReferenceM15 - find 09:00 M15 candle (closed)        |
+//| DetectAndSetReferenceM15 - find 00:00 M15 candle (closed)        |
 //+------------------------------------------------------------------+
 void DetectAndSetReferenceM15()
 {
