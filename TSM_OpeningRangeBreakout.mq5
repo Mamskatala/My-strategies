@@ -1,11 +1,12 @@
 //+------------------------------------------------------------------+
 //|                                    TSM_OpeningRangeBreakout.mq5 |
 //|         M15 Reference + M5 Breakout/Retest/Confirm - BUY Only  |
+//|                          Strict State Machine v3.0              |
 //+------------------------------------------------------------------+
 #property copyright "TSM Opening Range Breakout"
 #property link      ""
-#property version   "2.00"
-#property description "M15 Ref (00:00) + M5 Breakout/Retest/Confirm - BUY Only"
+#property version   "3.00"
+#property description "M15 Ref + M5 Breakout/Retest/Confirm - BUY Only - Strict State Machine"
 
 #include <Trade\Trade.mqh>
 
@@ -22,15 +23,23 @@ input int    RefHour               = 0;      // Reference M15 candle hour (serve
 input int    RefMinute             = 0;      // Reference M15 candle minute (server)
 input bool   DrawRefLines          = true;   // Draw RefHigh / RefLow lines
 
-//--- Daily state
-bool   RangeDefined       = false;
-bool   BreakoutConfirmed  = false;
-bool   RetestConfirmed    = false;
-bool   TradeDoneToday     = false;
+//--- State Machine
+enum ENUM_ORB_STATE
+{
+   WAIT_REF_CLOSE,      // State 0: Waiting for M15 reference candle close
+   WAIT_BREAKOUT,       // State 1: Waiting for M5 breakout above RefHigh
+   WAIT_RETEST,         // State 2: Waiting for pullback to RefHigh zone
+   WAIT_CONFIRMATION,   // State 3: Waiting for bullish confirmation candle
+   TRADE_DONE           // State 4: Trade executed or day complete
+};
 
+ENUM_ORB_STATE CurrentState = WAIT_REF_CLOSE;
+
+//--- Reference levels
 double RefHigh = 0.0;
 double RefLow  = 0.0;
 
+//--- Tracking
 datetime LastM5BarTime  = 0;
 datetime CurrentDayDate = 0;
 
@@ -53,10 +62,11 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(MaxSlippagePoints);
 
-   Print("=== TSM ORB v2.0 initialized ===");
+   Print("=== TSM ORB v3.0 initialized (Strict State Machine) ===");
    Print("Symbol: ", _Symbol, " | Digits: ", _Digits, " | PipMult: ", PipMultiplier());
    Print("RefHour: ", RefHour, ":", (RefMinute < 10 ? "0" : ""), RefMinute);
    Print("FixedTP_Pips: ", FixedTP_Pips, " | LookbackSwing: ", LookbackSwing);
+   Print("RetestTolerancePoints: ", RetestTolerancePoints);
    Print("Lots: ", DoubleToString(Lots, 2), " | Magic: ", MagicNumber);
 
    return INIT_SUCCEEDED;
@@ -69,36 +79,32 @@ void OnDeinit(const int reason)
 {
    ObjectDelete(0, "ORB_RefHigh");
    ObjectDelete(0, "ORB_RefLow");
-   Print("=== TSM ORB v2.0 deinitialized ===");
+   Print("=== TSM ORB v3.0 deinitialized ===");
 }
 
 //+------------------------------------------------------------------+
-//| ResetDailyState - reset all flags for new day                    |
+//| ResetDailyState - reset state machine for new day                |
 //+------------------------------------------------------------------+
 void ResetDailyState()
 {
-   RangeDefined      = false;
-   BreakoutConfirmed = false;
-   RetestConfirmed   = false;
-   TradeDoneToday    = false;
-   RefHigh           = 0.0;
-   RefLow            = 0.0;
+   CurrentState = WAIT_REF_CLOSE;
+   RefHigh      = 0.0;
+   RefLow       = 0.0;
 
    ObjectDelete(0, "ORB_RefHigh");
    ObjectDelete(0, "ORB_RefLow");
 
-   Print("--- DAILY RESET --- All states cleared.");
+   Print("--- DAILY RESET --- State -> WAIT_REF_CLOSE");
 }
 
 //+------------------------------------------------------------------+
-//| DetectAndSetReferenceM15 - find 00:00 M15 candle (closed)        |
+//| DetectAndSetReferenceM15 - find reference M15 candle (closed)    |
 //+------------------------------------------------------------------+
 void DetectAndSetReferenceM15()
 {
-   if(RangeDefined)
+   if(CurrentState != WAIT_REF_CLOSE)
       return;
 
-   // Look for the M15 bar whose open time matches RefHour:RefMinute today
    datetime serverTime = TimeCurrent();
    MqlDateTime dt;
    TimeToStruct(serverTime, dt);
@@ -124,8 +130,6 @@ void DetectAndSetReferenceM15()
       return;
    }
 
-   // Must be a completed bar (shift >= 1 means it's not the current forming bar)
-   // But if shift == 0, the bar might still be forming
    datetime barOpenTime = iTime(_Symbol, PERIOD_M15, shift);
    if(barOpenTime != refBarTime)
    {
@@ -134,7 +138,7 @@ void DetectAndSetReferenceM15()
       return;
    }
 
-   // Ensure this bar is closed (current time must be >= barOpenTime + 15 min)
+   // Ensure this bar is closed
    if(serverTime < barOpenTime + 15 * 60)
    {
       Print("DetectAndSetReferenceM15: Reference M15 bar not yet closed.");
@@ -143,9 +147,11 @@ void DetectAndSetReferenceM15()
 
    RefHigh = iHigh(_Symbol, PERIOD_M15, shift);
    RefLow  = iLow(_Symbol, PERIOD_M15, shift);
-   RangeDefined = true;
 
-   Print("=== M15 REFERENCE SET ===");
+   // Transition: WAIT_REF_CLOSE -> WAIT_BREAKOUT
+   CurrentState = WAIT_BREAKOUT;
+
+   Print("=== M15 REFERENCE SET === State -> WAIT_BREAKOUT");
    Print("  Time: ", TimeToString(barOpenTime));
    Print("  RefHigh: ", DoubleToString(RefHigh, _Digits));
    Print("  RefLow:  ", DoubleToString(RefLow, _Digits));
@@ -186,70 +192,94 @@ bool IsNewClosedM5Bar()
 }
 
 //+------------------------------------------------------------------+
-//| CheckBreakoutM5 - bar[1] close > RefHigh                         |
+//| CheckBreakoutM5 - bar[1] close > RefHigh (closed bar only)       |
 //+------------------------------------------------------------------+
 void CheckBreakoutM5()
 {
-   if(BreakoutConfirmed)
+   if(CurrentState != WAIT_BREAKOUT)
       return;
 
    double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
    if(closeBar1 > RefHigh)
    {
-      BreakoutConfirmed = true;
-      Print("=== BREAKOUT CONFIRMED ===");
+      // Transition: WAIT_BREAKOUT -> WAIT_RETEST
+      CurrentState = WAIT_RETEST;
+      Print("=== BREAKOUT CONFIRMED === State -> WAIT_RETEST");
       Print("  M5 bar[1] Close: ", DoubleToString(closeBar1, _Digits),
             " > RefHigh: ", DoubleToString(RefHigh, _Digits));
    }
 }
 
 //+------------------------------------------------------------------+
-//| CheckRetestM5 - bar[1] low pulls back to RefHigh zone           |
+//| CheckRetestM5 - STRICT pullback validation (closed bar only)     |
+//|                                                                  |
+//| Retest valid ONLY if (AFTER breakout):                           |
+//|   Low_bar[1]   <= RefHigh   (price pulled back to RefHigh)       |
+//|   Close_bar[1] >= RefHigh - tolerance (close stays in zone)      |
+//|                                                                  |
+//| REJECTED if Low_bar[1] > RefHigh (never came back down)          |
 //+------------------------------------------------------------------+
 void CheckRetestM5()
 {
-   if(RetestConfirmed)
+   if(CurrentState != WAIT_RETEST)
       return;
 
-   double lowBar1  = iLow(_Symbol, PERIOD_M5, 1);
+   double lowBar1   = iLow(_Symbol, PERIOD_M5, 1);
+   double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
    double tolerance = RetestTolerancePoints * _Point;
 
-   // Retest = price pulled back DOWN to RefHigh zone (true pullback)
-   // Low must be AT or BELOW RefHigh (proving price actually came back down)
-   // with tolerance on the downside only: [RefHigh - tolerance, RefHigh]
-   if(lowBar1 <= RefHigh && lowBar1 >= RefHigh - tolerance)
+   // PROHIBITION: reject if low never reached RefHigh
+   if(lowBar1 > RefHigh)
    {
-      RetestConfirmed = true;
-      Print("=== RETEST (PULLBACK) CONFIRMED ===");
+      Print("  Retest check: REJECTED - Low=", DoubleToString(lowBar1, _Digits),
+            " > RefHigh=", DoubleToString(RefHigh, _Digits),
+            " (price never pulled back)");
+      return;
+   }
+
+   // Strict retest: Low <= RefHigh AND Close >= RefHigh - tolerance
+   if(closeBar1 >= RefHigh - tolerance)
+   {
+      // Transition: WAIT_RETEST -> WAIT_CONFIRMATION
+      CurrentState = WAIT_CONFIRMATION;
+      Print("=== RETEST (PULLBACK) CONFIRMED === State -> WAIT_CONFIRMATION");
       Print("  M5 bar[1] Low: ", DoubleToString(lowBar1, _Digits),
-            " pulled back to RefHigh zone [", DoubleToString(RefHigh - tolerance, _Digits),
-            " , ", DoubleToString(RefHigh, _Digits), "]");
+            " <= RefHigh: ", DoubleToString(RefHigh, _Digits));
+      Print("  M5 bar[1] Close: ", DoubleToString(closeBar1, _Digits),
+            " >= RefHigh-tol: ", DoubleToString(RefHigh - tolerance, _Digits));
    }
    else
    {
-      Print("  Retest check: bar[1] Low=", DoubleToString(lowBar1, _Digits),
-            " | RefHigh=", DoubleToString(RefHigh, _Digits),
-            " | Zone=[", DoubleToString(RefHigh - tolerance, _Digits),
-            ",", DoubleToString(RefHigh, _Digits), "] -> NOT yet");
+      Print("  Retest check: Low=", DoubleToString(lowBar1, _Digits),
+            " <= RefHigh OK, but Close=", DoubleToString(closeBar1, _Digits),
+            " < RefHigh-tol=", DoubleToString(RefHigh - tolerance, _Digits),
+            " -> NOT valid (close collapsed)");
    }
 }
 
 //+------------------------------------------------------------------+
-//| CheckBullishConfirmationM5 - bar[1] is bullish + close > RefHigh |
+//| CheckBullishConfirmationM5 - bar[1] bullish + close > RefHigh    |
 //+------------------------------------------------------------------+
 bool CheckBullishConfirmationM5()
 {
+   if(CurrentState != WAIT_CONFIRMATION)
+      return false;
+
    double openBar1  = iOpen(_Symbol, PERIOD_M5, 1);
    double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
 
    if(closeBar1 > openBar1 && closeBar1 > RefHigh)
    {
-      Print("=== BULLISH CONFIRMATION ===");
+      Print("=== BULLISH CONFIRMATION VALID ===");
       Print("  M5 bar[1] Open: ", DoubleToString(openBar1, _Digits),
             " Close: ", DoubleToString(closeBar1, _Digits),
             " > RefHigh: ", DoubleToString(RefHigh, _Digits));
       return true;
    }
+
+   Print("  Confirmation check: Open=", DoubleToString(openBar1, _Digits),
+         " Close=", DoubleToString(closeBar1, _Digits),
+         " RefHigh=", DoubleToString(RefHigh, _Digits), " -> NOT yet");
    return false;
 }
 
@@ -259,7 +289,6 @@ bool CheckBullishConfirmationM5()
 double CalculateRecentLowSL()
 {
    double lowestLow = DBL_MAX;
-   // Start from bar[1] (last closed) to bar[LookbackSwing]
    for(int i = 1; i <= LookbackSwing; i++)
    {
       double low_i = iLow(_Symbol, PERIOD_M5, i);
@@ -268,7 +297,6 @@ double CalculateRecentLowSL()
    }
 
    double sl = lowestLow - BufferSLPoints * _Point;
-   // Normalize to tick size
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(tickSize > 0)
       sl = NormalizeDouble(MathFloor(sl / tickSize) * tickSize, _Digits);
@@ -286,7 +314,6 @@ double CalculateRecentLowSL()
 double CalculateTPFromPips(double entryPrice)
 {
    double tp = entryPrice + FixedTP_Pips * PipMultiplier() * _Point;
-   // Normalize to tick size
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(tickSize > 0)
       tp = NormalizeDouble(MathRound(tp / tickSize) * tickSize, _Digits);
@@ -313,7 +340,7 @@ bool HasTradedToday()
       }
    }
 
-   // Check closed deals today using date struct
+   // Check closed deals today
    MqlDateTime dtDay;
    TimeToStruct(TimeCurrent(), dtDay);
    dtDay.hour = 0;
@@ -339,9 +366,22 @@ bool HasTradedToday()
 
 //+------------------------------------------------------------------+
 //| ExecuteBuyOrder - place BUY market order with SL/TP              |
+//|                                                                  |
+//| FINAL VALIDATION before OrderSend:                               |
+//|   CurrentState == WAIT_CONFIRMATION (breakout+retest done)       |
+//|   AND confirmation candle valid                                   |
+//|   AND no trade today                                              |
 //+------------------------------------------------------------------+
 void ExecuteBuyOrder()
 {
+   // --- ABSOLUTE GUARD: verify complete state sequence ---
+   if(CurrentState != WAIT_CONFIRMATION)
+   {
+      Print("ExecuteBuyOrder: BLOCKED - State is ", EnumToString(CurrentState),
+            " (must be WAIT_CONFIRMATION). Breakout or Retest was skipped.");
+      return;
+   }
+
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    if(ask <= 0)
    {
@@ -376,19 +416,20 @@ void ExecuteBuyOrder()
       double minDist = stopsLevel * _Point;
       if((ask - sl) < minDist)
       {
-         Print("ExecuteBuyOrder: REJECTED - SL too close to price. Min stops level: ",
+         Print("ExecuteBuyOrder: REJECTED - SL too close. Min stops level: ",
                stopsLevel, " pts");
          return;
       }
       if((tp - ask) < minDist)
       {
-         Print("ExecuteBuyOrder: REJECTED - TP too close to price. Min stops level: ",
+         Print("ExecuteBuyOrder: REJECTED - TP too close. Min stops level: ",
                stopsLevel, " pts");
          return;
       }
    }
 
    Print("=== SENDING BUY ORDER ===");
+   Print("  State: ", EnumToString(CurrentState));
    Print("  Ask: ", DoubleToString(ask, _Digits));
    Print("  SL:  ", DoubleToString(sl, _Digits), " (", DoubleToString(slDistPoints, 0), " pts)");
    Print("  TP:  ", DoubleToString(tp, _Digits));
@@ -396,10 +437,12 @@ void ExecuteBuyOrder()
 
    if(trade.Buy(Lots, _Symbol, ask, sl, tp, "ORB_BUY"))
    {
-      TradeDoneToday = true;
+      // Transition: WAIT_CONFIRMATION -> TRADE_DONE
+      CurrentState = TRADE_DONE;
       uint retcode = trade.ResultRetcode();
-      Print("=== BUY ORDER EXECUTED === Ticket: ", trade.ResultOrder(),
-            " Retcode: ", retcode, " Comment: ", trade.ResultComment());
+      Print("=== BUY ORDER EXECUTED === State -> TRADE_DONE");
+      Print("  Ticket: ", trade.ResultOrder(), " Retcode: ", retcode,
+            " Comment: ", trade.ResultComment());
    }
    else
    {
@@ -409,11 +452,23 @@ void ExecuteBuyOrder()
 }
 
 //+------------------------------------------------------------------+
-//| Expert tick function                                             |
+//| Expert tick function - STRICT STATE MACHINE                      |
+//|                                                                  |
+//| State 0: WAIT_REF_CLOSE    -> detect M15 ref                    |
+//| State 1: WAIT_BREAKOUT     -> check M5 close > RefHigh          |
+//| State 2: WAIT_RETEST       -> check pullback to RefHigh zone    |
+//| State 3: WAIT_CONFIRMATION -> check bullish candle then BUY     |
+//| State 4: TRADE_DONE        -> no more trading today             |
+//|                                                                  |
+//| PROHIBITIONS:                                                    |
+//| - Cannot enter if breakout not confirmed                         |
+//| - Cannot enter if retest not confirmed (State 2 not skippable)  |
+//| - Cannot use data from bar in formation (always bar[1])          |
+//| - Cannot enter on same bar as breakout                           |
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // --- Day change detection (uses full date to handle year boundary) ---
+   // --- Day change detection ---
    MqlDateTime dtNow;
    TimeToStruct(TimeCurrent(), dtNow);
    dtNow.hour = 0;
@@ -428,48 +483,50 @@ void OnTick()
       Print("New server day: ", TimeToString(TimeCurrent(), TIME_DATE));
    }
 
-   // --- Step 1: Detect M15 reference (once per day) ---
-   if(!RangeDefined)
+   // --- State 0: Wait for M15 reference candle close ---
+   if(CurrentState == WAIT_REF_CLOSE)
    {
       DetectAndSetReferenceM15();
-      if(!RangeDefined)
-         return;  // Wait until reference candle closes
+      return;
    }
 
-   // --- Already traded today? ---
-   if(TradeDoneToday)
+   // --- State 4: Already traded today ---
+   if(CurrentState == TRADE_DONE)
       return;
 
-   // --- Step 2: Process only on new closed M5 bar ---
+   // --- Process only on new closed M5 bar (anti-duplication) ---
    if(!IsNewClosedM5Bar())
       return;
 
-   // --- Step 3: Check breakout ---
-   if(!BreakoutConfirmed)
+   // --- State 1: Check breakout ---
+   if(CurrentState == WAIT_BREAKOUT)
    {
       CheckBreakoutM5();
-      return;  // Wait for next bar after breakout
+      return;  // MUST wait for next bar even if breakout confirmed
    }
 
-   // --- Step 4: Check retest ---
-   if(!RetestConfirmed)
+   // --- State 2: Check retest (CANNOT BE SKIPPED) ---
+   if(CurrentState == WAIT_RETEST)
    {
       CheckRetestM5();
-      return;  // Wait for next bar after retest
+      return;  // MUST wait for next bar even if retest confirmed
    }
 
-   // --- Step 5: Check bullish confirmation and execute ---
-   if(CheckBullishConfirmationM5())
+   // --- State 3: Check confirmation and execute ---
+   if(CurrentState == WAIT_CONFIRMATION)
    {
-      // Double-check no trade today (history + positions)
-      if(!HasTradedToday())
+      if(CheckBullishConfirmationM5())
       {
-         ExecuteBuyOrder();
-      }
-      else
-      {
-         TradeDoneToday = true;
-         Print("Trade already exists today - skipping.");
+         // Final safety: verify no trade today
+         if(!HasTradedToday())
+         {
+            ExecuteBuyOrder();
+         }
+         else
+         {
+            CurrentState = TRADE_DONE;
+            Print("Trade already exists today - State -> TRADE_DONE");
+         }
       }
    }
 }
