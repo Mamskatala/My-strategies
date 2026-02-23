@@ -122,6 +122,31 @@ double OnTester()
 }
 
 //+------------------------------------------------------------------+
+//| OnTesterInit - log optimization guidance at start                 |
+//+------------------------------------------------------------------+
+void OnTesterInit()
+{
+   Print("=== OPTIMIZATION STARTED ===");
+   Print("To optimize: go to Strategy Tester -> Inputs tab");
+   Print("Check the box next to each parameter you want to optimize");
+   Print("Set Start / Step / Stop values for each checked parameter");
+   Print("Recommended parameters to optimize:");
+   Print("  LookbackSwing:         Start=5   Step=5   Stop=30");
+   Print("  BufferSLPoints:        Start=10  Step=10  Stop=100");
+   Print("  RetestTolerancePoints: Start=10  Step=10  Stop=60");
+   Print("  FixedTP_Pips:          Start=20  Step=10  Stop=100");
+   Print("  MaxBarsToReturn:       Start=3   Step=1   Stop=12");
+}
+
+//+------------------------------------------------------------------+
+//| OnTesterDeinit - log optimization completion                      |
+//+------------------------------------------------------------------+
+void OnTesterDeinit()
+{
+   Print("=== OPTIMIZATION COMPLETED ===");
+}
+
+//+------------------------------------------------------------------+
 //| ResetDailyState - reset state machine for new day                |
 //+------------------------------------------------------------------+
 void ResetDailyState()
@@ -131,6 +156,7 @@ void ResetDailyState()
    RefLow             = 0.0;
    BreakoutTime       = 0;
    BarsSinceBreakout  = 0;
+   LastM5BarTime      = 0;  // reset so first bar of new day is detected
 
    ObjectDelete(0, "ORB_RefHigh");
    ObjectDelete(0, "ORB_RefLow");
