@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "TSM Opening Range Breakout"
 #property link      ""
-#property version   "4.00"
+#property version   "4.10"
 #property description "M15 Ref + M5 Breakout/ReturnToLevel/BullConfirm - BUY Only"
 
 #include <Trade\Trade.mqh>
@@ -22,6 +22,8 @@ input int    MaxSlippagePoints     = 30;     // Max slippage (points)
 input int    RefHour               = 0;      // Reference M15 candle hour (server)
 input int    RefMinute             = 0;      // Reference M15 candle minute (server)
 input bool   DrawRefLines          = true;   // Draw RefHigh / RefLow lines
+input int    MaxBarsToReturn       = 6;      // Max M5 bars after breakout to return to level
+input bool   CancelSetupIfExpired  = true;   // Cancel setup if return window expires
 
 //--- State Machine (RETURN_TO_LEVEL — no "retest" term)
 enum ENUM_ORB_STATE
@@ -43,6 +45,10 @@ double RefLow  = 0.0;
 datetime LastM5BarTime  = 0;
 datetime CurrentDayDate = 0;
 
+//--- Breakout timing (for return-to-level window)
+datetime BreakoutTime       = 0;   // open time of the M5 bar that confirmed breakout
+int      BarsSinceBreakout  = 0;
+
 //--- Trade object
 CTrade trade;
 
@@ -62,11 +68,12 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(MaxSlippagePoints);
 
-   Print("=== TSM ORB v4.0 initialized (RETURN_TO_LEVEL State Machine) ===");
+   Print("=== TSM ORB v4.10 initialized (RETURN_TO_LEVEL State Machine) ===");
    Print("Symbol: ", _Symbol, " | Digits: ", _Digits, " | PipMult: ", PipMultiplier());
    Print("RefHour: ", RefHour, ":", (RefMinute < 10 ? "0" : ""), RefMinute);
    Print("FixedTP_Pips: ", FixedTP_Pips, " | LookbackSwing: ", LookbackSwing);
    Print("TolerancePoints: ", RetestTolerancePoints);
+   Print("MaxBarsToReturn: ", MaxBarsToReturn, " | CancelIfExpired: ", CancelSetupIfExpired);
    Print("Lots: ", DoubleToString(Lots, 2), " | Magic: ", MagicNumber);
 
    return INIT_SUCCEEDED;
@@ -79,7 +86,7 @@ void OnDeinit(const int reason)
 {
    ObjectDelete(0, "ORB_RefHigh");
    ObjectDelete(0, "ORB_RefLow");
-   Print("=== TSM ORB v4.0 deinitialized ===");
+   Print("=== TSM ORB v4.10 deinitialized ===");
 }
 
 //+------------------------------------------------------------------+
@@ -119,9 +126,11 @@ double OnTester()
 //+------------------------------------------------------------------+
 void ResetDailyState()
 {
-   CurrentState = WAIT_REF_M15_CLOSE;
-   RefHigh      = 0.0;
-   RefLow       = 0.0;
+   CurrentState       = WAIT_REF_M15_CLOSE;
+   RefHigh            = 0.0;
+   RefLow             = 0.0;
+   BreakoutTime       = 0;
+   BarsSinceBreakout  = 0;
 
    ObjectDelete(0, "ORB_RefHigh");
    ObjectDelete(0, "ORB_RefLow");
@@ -231,9 +240,13 @@ void CheckBreakoutM5()
    double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
    if(closeBar1 > RefHigh)
    {
+      // Store breakout bar time for return-to-level window
+      BreakoutTime = iTime(_Symbol, PERIOD_M5, 1);
+      BarsSinceBreakout = 0;
+
       // Transition: WAIT_BREAKOUT -> WAIT_RETURN_TO_LEVEL
       CurrentState = WAIT_RETURN_TO_LEVEL;
-      Print("BREAKOUT OK -> WAIT_RETURN_TO_LEVEL");
+      Print("BREAKOUT OK at ", TimeToString(BreakoutTime), " -> WAIT_RETURN_TO_LEVEL");
       Print("  M5 bar[1] Close: ", DoubleToString(closeBar1, _Digits),
             " > RefHigh: ", DoubleToString(RefHigh, _Digits));
    }
@@ -246,6 +259,7 @@ void CheckBreakoutM5()
 //|   Low[1]   <= RefHigh + Tol   (price touched the level)          |
 //|   Close[1] >= RefHigh - Tol   (close held in/above zone)         |
 //|                                                                  |
+//| TEMPORAL WINDOW: must occur within MaxBarsToReturn M5 bars       |
 //| GUARD: BUY is FORBIDDEN in this state                            |
 //| GUARD: must happen AFTER BreakoutValid (enforced by state)       |
 //+------------------------------------------------------------------+
@@ -253,6 +267,24 @@ void CheckReturnToLevel()
 {
    if(CurrentState != WAIT_RETURN_TO_LEVEL)
       return;
+
+   // --- Count bars since breakout (closed bars only) ---
+   if(BreakoutTime > 0)
+   {
+      int breakoutShift = iBarShift(_Symbol, PERIOD_M5, BreakoutTime, false);
+      if(breakoutShift > 0)
+         BarsSinceBreakout = breakoutShift - 1;  // exclude the breakout bar itself
+   }
+
+   // --- Check temporal window expiration ---
+   if(CancelSetupIfExpired && BarsSinceBreakout >= MaxBarsToReturn)
+   {
+      CurrentState = TRADE_DONE;
+      Print("SETUP CANCELLED: no return within ", MaxBarsToReturn, " M5 bars");
+      Print("  BarsSinceBreakout: ", BarsSinceBreakout,
+            " | BreakoutTime: ", TimeToString(BreakoutTime));
+      return;
+   }
 
    double lowBar1   = iLow(_Symbol, PERIOD_M5, 1);
    double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
@@ -273,11 +305,13 @@ void CheckReturnToLevel()
    }
    else
    {
+      int barsRemaining = MaxBarsToReturn - BarsSinceBreakout;
       Print("  Return-to-level check: Low=", DoubleToString(lowBar1, _Digits),
             " Close=", DoubleToString(closeBar1, _Digits),
             " | TouchZone=[", DoubleToString(RefHigh - tolerance, _Digits),
             ",", DoubleToString(RefHigh + tolerance, _Digits),
-            "] -> NOT yet");
+            "] -> NOT yet (", BarsSinceBreakout, "/", MaxBarsToReturn,
+            " bars, ", barsRemaining, " remaining)");
    }
 }
 
@@ -484,6 +518,7 @@ void ExecuteBuyOrder()
 //| WAIT_REF_M15_CLOSE    -> detect M15 ref, calc RefHigh/RefLow    |
 //| WAIT_BREAKOUT         -> Close[1] > RefHigh                      |
 //| WAIT_RETURN_TO_LEVEL  -> Low[1] <= RefHigh+Tol, Close[1]>=RH-Tol|
+//|                       -> CANCELLED if window expires             |
 //| WAIT_BULL_CONFIRM     -> Close[1]>Open[1], Close[1]>RefHigh->BUY|
 //| TRADE_DONE            -> no more trading today                   |
 //|                                                                  |
