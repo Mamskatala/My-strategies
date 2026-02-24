@@ -25,6 +25,12 @@ input bool   DrawRefLines          = true;   // Draw RefHigh / RefLow lines
 input int    MaxBarsToReturn       = 6;      // Max M5 bars after breakout to return to level
 input bool   CancelSetupIfExpired  = true;   // Cancel setup if return window expires
 
+//--- Trend Regime Filter
+input bool              UseTrendFilter     = true;       // Enable bullish trend filter
+input int               TrendMA_Period     = 200;        // Trend MA period
+input ENUM_TIMEFRAMES   TrendMA_Timeframe  = PERIOD_H1;  // Trend MA timeframe
+input ENUM_MA_METHOD    TrendMA_Method     = MODE_EMA;   // Trend MA method (EMA/SMA)
+
 //--- State Machine
 enum ENUM_ORB_STATE
 {
@@ -48,6 +54,9 @@ datetime CurrentDayDate = 0;
 //--- Breakout timing (for return-to-level window)
 datetime BreakoutTime       = 0;   // open time of the M5 bar that confirmed breakout
 int      BarsSinceBreakout  = 0;
+
+//--- Trend MA handle
+int TrendMA_Handle = INVALID_HANDLE;
 
 //--- Trade object
 CTrade trade;
@@ -76,6 +85,20 @@ int OnInit()
    Print("MaxBarsToReturn: ", MaxBarsToReturn, " | CancelIfExpired: ", CancelSetupIfExpired);
    Print("Lots: ", DoubleToString(Lots, 2), " | Magic: ", MagicNumber);
 
+   if(UseTrendFilter)
+   {
+      TrendMA_Handle = iMA(_Symbol, TrendMA_Timeframe, TrendMA_Period, 0, TrendMA_Method, PRICE_CLOSE);
+      if(TrendMA_Handle == INVALID_HANDLE)
+      {
+         Print("ERROR: Failed to create trend MA indicator (period=", TrendMA_Period, ")");
+         return INIT_FAILED;
+      }
+      Print("TrendFilter: ON | MA(", TrendMA_Period, ") on ", EnumToString(TrendMA_Timeframe),
+            " Method: ", EnumToString(TrendMA_Method));
+   }
+   else
+      Print("TrendFilter: OFF");
+
    return INIT_SUCCEEDED;
 }
 
@@ -86,6 +109,8 @@ void OnDeinit(const int reason)
 {
    ObjectDelete(0, "ORB_RefHigh");
    ObjectDelete(0, "ORB_RefLow");
+   if(TrendMA_Handle != INVALID_HANDLE)
+      IndicatorRelease(TrendMA_Handle);
    Print("=== TSM ORB v6.00 deinitialized ===");
 }
 
@@ -136,6 +161,7 @@ void OnTesterInit()
    Print("  RetestTolerancePoints: Start=10  Step=10  Stop=60");
    Print("  FixedTP_Pips:          Start=20  Step=10  Stop=100");
    Print("  MaxBarsToReturn:       Start=3   Step=1   Stop=12");
+   Print("  TrendMA_Period:        Start=50  Step=50  Stop=300");
 }
 
 //+------------------------------------------------------------------+
@@ -253,6 +279,39 @@ bool IsNewClosedM5Bar()
 }
 
 //+------------------------------------------------------------------+
+//| IsBullishTrend - check if price is above trend MA                |
+//|                                                                  |
+//| Returns true if:                                                  |
+//|   - UseTrendFilter is false (filter disabled), OR                |
+//|   - Current close is above the trend MA value                     |
+//+------------------------------------------------------------------+
+bool IsBullishTrend()
+{
+   if(!UseTrendFilter)
+      return true;
+
+   if(TrendMA_Handle == INVALID_HANDLE)
+      return true;  // failsafe: don't block if indicator failed
+
+   double maValue[1];
+   if(CopyBuffer(TrendMA_Handle, 0, 1, 1, maValue) != 1)
+   {
+      Print("IsBullishTrend: CopyBuffer failed, allowing trade.");
+      return true;  // failsafe: don't block on data error
+   }
+
+   double trendClose = iClose(_Symbol, TrendMA_Timeframe, 1);
+   bool bullish = (trendClose > maValue[0]);
+
+   if(!bullish)
+      Print("  Trend filter: BEARISH (Close ", DoubleToString(trendClose, _Digits),
+            " <= MA(", TrendMA_Period, ")=", DoubleToString(maValue[0], _Digits),
+            ") -> Breakout blocked");
+
+   return bullish;
+}
+
+//+------------------------------------------------------------------+
 //| CheckBreakoutM5 - bar[1] close > RefHigh (closed bar only)       |
 //|                                                                  |
 //| BreakoutValid = (Close[1] > RefHigh)                              |
@@ -261,6 +320,10 @@ bool IsNewClosedM5Bar()
 void CheckBreakoutM5()
 {
    if(CurrentState != WAIT_BREAKOUT)
+      return;
+
+   // --- Trend regime filter: only look for breakouts in bullish trend ---
+   if(!IsBullishTrend())
       return;
 
    double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
