@@ -1,18 +1,18 @@
 //+------------------------------------------------------------------+
 //|                                    TSM_OpeningRangeBreakout.mq5 |
-//|      M15 Reference + M5 Breakout/ReturnToLevel/Confirm - SELL  |
-//|                    Strict State Machine v5.0                    |
+//|      M15 Reference + M5 Breakout/Retest/Confirm - BUY ONLY     |
+//|                    Strict State Machine v6.0                    |
 //+------------------------------------------------------------------+
 #property copyright "TSM Opening Range Breakout"
 #property link      ""
-#property version   "5.00"
-#property description "M15 Ref + M5 Breakout/ReturnToLevel/BearConfirm - SELL Only"
+#property version   "6.00"
+#property description "M15 Ref + M5 Breakout/Retest/BullConfirm - BUY Only"
 
 #include <Trade\Trade.mqh>
 
 //--- Inputs
-input int    LookbackSwing         = 10;     // N M5 bars for swing high SL
-input int    BufferSLPoints        = 50;     // SL buffer above recent high (points)
+input int    LookbackSwing         = 10;     // N M5 bars for swing low SL
+input int    BufferSLPoints        = 50;     // SL buffer below recent low (points)
 input int    MinSLPoints           = 100;    // Minimum SL distance (points)
 input int    RetestTolerancePoints = 30;     // Touch zone tolerance (points)
 input int    FixedTP_Pips          = 50;     // Take Profit (pips)
@@ -25,13 +25,13 @@ input bool   DrawRefLines          = true;   // Draw RefHigh / RefLow lines
 input int    MaxBarsToReturn       = 6;      // Max M5 bars after breakout to return to level
 input bool   CancelSetupIfExpired  = true;   // Cancel setup if return window expires
 
-//--- State Machine (RETURN_TO_LEVEL — no "retest" term)
+//--- State Machine
 enum ENUM_ORB_STATE
 {
    WAIT_REF_M15_CLOSE,     // State 0: Waiting for M15 reference candle close
-   WAIT_BREAKOUT,          // State 1: Waiting for M5 breakout below RefLow
-   WAIT_RETURN_TO_LEVEL,   // State 2: Waiting for price to return to RefLow touch zone
-   WAIT_BEAR_CONFIRM,      // State 3: Waiting for bearish confirmation candle
+   WAIT_BREAKOUT,          // State 1: Waiting for M5 breakout above RefHigh
+   WAIT_RETEST,            // State 2: Waiting for price to pull back to RefHigh zone
+   WAIT_CONFIRMATION,      // State 3: Waiting for bullish confirmation candle
    TRADE_DONE              // State 4: Trade executed, no more trading today
 };
 
@@ -68,7 +68,7 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(MaxSlippagePoints);
 
-   Print("=== TSM ORB v5.00 initialized (SELL ONLY - RETURN_TO_LEVEL State Machine) ===");
+   Print("=== TSM ORB v6.00 initialized (BUY ONLY - Strict Retest State Machine) ===");
    Print("Symbol: ", _Symbol, " | Digits: ", _Digits, " | PipMult: ", PipMultiplier());
    Print("RefHour: ", RefHour, ":", (RefMinute < 10 ? "0" : ""), RefMinute);
    Print("FixedTP_Pips: ", FixedTP_Pips, " | LookbackSwing: ", LookbackSwing);
@@ -86,7 +86,7 @@ void OnDeinit(const int reason)
 {
    ObjectDelete(0, "ORB_RefHigh");
    ObjectDelete(0, "ORB_RefLow");
-   Print("=== TSM ORB v5.00 deinitialized ===");
+   Print("=== TSM ORB v6.00 deinitialized ===");
 }
 
 //+------------------------------------------------------------------+
@@ -253,10 +253,10 @@ bool IsNewClosedM5Bar()
 }
 
 //+------------------------------------------------------------------+
-//| CheckBreakoutM5 - bar[1] close < RefLow (closed bar only)        |
+//| CheckBreakoutM5 - bar[1] close > RefHigh (closed bar only)       |
 //|                                                                  |
-//| BreakoutValid = (Close[1] < RefLow)                              |
-//| GUARD: SELL is FORBIDDEN in this state                           |
+//| BreakoutValid = (Close[1] > RefHigh)                              |
+//| GUARD: BUY is FORBIDDEN in this state                            |
 //+------------------------------------------------------------------+
 void CheckBreakoutM5()
 {
@@ -264,34 +264,36 @@ void CheckBreakoutM5()
       return;
 
    double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
-   if(closeBar1 < RefLow)
+   if(closeBar1 > RefHigh)
    {
-      // Store breakout bar time for return-to-level window
+      // Store breakout bar time for retest window
       BreakoutTime = iTime(_Symbol, PERIOD_M5, 1);
       BarsSinceBreakout = 0;
 
-      // Transition: WAIT_BREAKOUT -> WAIT_RETURN_TO_LEVEL
-      CurrentState = WAIT_RETURN_TO_LEVEL;
-      Print("BREAKOUT OK at ", TimeToString(BreakoutTime), " -> WAIT_RETURN_TO_LEVEL");
+      // Transition: WAIT_BREAKOUT -> WAIT_RETEST
+      CurrentState = WAIT_RETEST;
+      Print("BREAKOUT OK at ", TimeToString(BreakoutTime), " -> WAIT_RETEST");
       Print("  M5 bar[1] Close: ", DoubleToString(closeBar1, _Digits),
-            " < RefLow: ", DoubleToString(RefLow, _Digits));
+            " > RefHigh: ", DoubleToString(RefHigh, _Digits));
    }
 }
 
 //+------------------------------------------------------------------+
-//| CheckReturnToLevel - price returns up to RefLow touch zone       |
+//| CheckRetestM5 - price pulls back down to RefHigh zone            |
 //|                                                                  |
-//| ReturnToLevelValid =                                             |
-//|   High[1]  >= RefLow - Tol   (price came back up to the level)   |
-//|   Close[1] <= RefLow + Tol   (close held in/below zone)          |
+//| RetestValid =                                                     |
+//|   Low[1]   <= RefHigh + Tol  (price came back down to level)      |
+//|   Close[1] >= RefHigh - Tol  (close held in/above zone)           |
+//|                                                                  |
+//| IMPORTANT: reject if Low[1] > RefHigh (price never came back)    |
 //|                                                                  |
 //| TEMPORAL WINDOW: must occur within MaxBarsToReturn M5 bars       |
-//| GUARD: SELL is FORBIDDEN in this state                           |
+//| GUARD: BUY is FORBIDDEN in this state                            |
 //| GUARD: must happen AFTER BreakoutValid (enforced by state)       |
 //+------------------------------------------------------------------+
-void CheckReturnToLevel()
+void CheckRetestM5()
 {
-   if(CurrentState != WAIT_RETURN_TO_LEVEL)
+   if(CurrentState != WAIT_RETEST)
       return;
 
    // --- Count bars since breakout (closed bars only) ---
@@ -306,101 +308,113 @@ void CheckReturnToLevel()
    if(CancelSetupIfExpired && BarsSinceBreakout >= MaxBarsToReturn)
    {
       CurrentState = TRADE_DONE;
-      Print("SETUP CANCELLED: no return within ", MaxBarsToReturn, " M5 bars");
+      Print("SETUP CANCELLED: no retest within ", MaxBarsToReturn, " M5 bars");
       Print("  BarsSinceBreakout: ", BarsSinceBreakout,
             " | BreakoutTime: ", TimeToString(BreakoutTime));
       return;
    }
 
-   double highBar1  = iHigh(_Symbol, PERIOD_M5, 1);
+   double lowBar1   = iLow(_Symbol, PERIOD_M5, 1);
    double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
    double tolerance = RetestTolerancePoints * _Point;
 
-   // Check if price returned UP to the RefLow touch zone
-   // High must reach within tolerance below RefLow (price came back up)
-   // Close must stay at or below RefLow plus tolerance (didn't break back above)
-   if(highBar1 >= RefLow - tolerance && closeBar1 <= RefLow + tolerance)
+   // STRICT GUARD: reject if Low > RefHigh (price never came back to level)
+   if(lowBar1 > RefHigh)
    {
-      // Transition: WAIT_RETURN_TO_LEVEL -> WAIT_BEAR_CONFIRM
-      CurrentState = WAIT_BEAR_CONFIRM;
-      Print("RETURN TO LEVEL OK -> WAIT_BEAR_CONFIRM");
-      Print("  M5 bar[1] High: ", DoubleToString(highBar1, _Digits),
-            " >= RefLow-Tol: ", DoubleToString(RefLow - tolerance, _Digits));
+      int barsRemaining = MaxBarsToReturn - BarsSinceBreakout;
+      Print("  Retest check: Low=", DoubleToString(lowBar1, _Digits),
+            " > RefHigh=", DoubleToString(RefHigh, _Digits),
+            " -> REJECTED (price never came back) (",
+            BarsSinceBreakout, "/", MaxBarsToReturn,
+            " bars, ", barsRemaining, " remaining)");
+      return;
+   }
+
+   // Check if price pulled back to the RefHigh zone
+   // Low must reach at or below RefHigh + tolerance (came back down)
+   // Close must stay at or above RefHigh - tolerance (held the zone)
+   if(lowBar1 <= RefHigh + tolerance && closeBar1 >= RefHigh - tolerance)
+   {
+      // Transition: WAIT_RETEST -> WAIT_CONFIRMATION
+      CurrentState = WAIT_CONFIRMATION;
+      Print("RETEST OK -> WAIT_CONFIRMATION");
+      Print("  M5 bar[1] Low: ", DoubleToString(lowBar1, _Digits),
+            " <= RefHigh+Tol: ", DoubleToString(RefHigh + tolerance, _Digits));
       Print("  M5 bar[1] Close: ", DoubleToString(closeBar1, _Digits),
-            " <= RefLow+Tol: ", DoubleToString(RefLow + tolerance, _Digits));
+            " >= RefHigh-Tol: ", DoubleToString(RefHigh - tolerance, _Digits));
    }
    else
    {
       int barsRemaining = MaxBarsToReturn - BarsSinceBreakout;
-      Print("  Return-to-level check: High=", DoubleToString(highBar1, _Digits),
+      Print("  Retest check: Low=", DoubleToString(lowBar1, _Digits),
             " Close=", DoubleToString(closeBar1, _Digits),
-            " | TouchZone=[", DoubleToString(RefLow - tolerance, _Digits),
-            ",", DoubleToString(RefLow + tolerance, _Digits),
+            " | Zone=[", DoubleToString(RefHigh - tolerance, _Digits),
+            ",", DoubleToString(RefHigh + tolerance, _Digits),
             "] -> NOT yet (", BarsSinceBreakout, "/", MaxBarsToReturn,
             " bars, ", barsRemaining, " remaining)");
    }
 }
 
 //+------------------------------------------------------------------+
-//| CheckBearishConfirmationM5 - bar[1] bearish + close < RefLow     |
+//| CheckBullishConfirmationM5 - bar[1] bullish + close > RefHigh    |
 //|                                                                  |
-//| BearConfirmValid = (Close[1] < Open[1]) AND (Close[1] < RefLow)  |
-//| GUARD: can only fire in WAIT_BEAR_CONFIRM state                  |
+//| ConfirmationValid = (Close[1] > Open[1]) AND (Close[1] > RefHigh)|
+//| GUARD: can only fire in WAIT_CONFIRMATION state                  |
 //+------------------------------------------------------------------+
-bool CheckBearishConfirmationM5()
+bool CheckBullishConfirmationM5()
 {
-   if(CurrentState != WAIT_BEAR_CONFIRM)
+   if(CurrentState != WAIT_CONFIRMATION)
       return false;
 
    double openBar1  = iOpen(_Symbol, PERIOD_M5, 1);
    double closeBar1 = iClose(_Symbol, PERIOD_M5, 1);
 
-   if(closeBar1 < openBar1 && closeBar1 < RefLow)
+   if(closeBar1 > openBar1 && closeBar1 > RefHigh)
    {
-      Print("BEAR CONFIRM OK -> OPEN SELL");
+      Print("BULL CONFIRM OK -> OPEN BUY");
       Print("  M5 bar[1] Open: ", DoubleToString(openBar1, _Digits),
             " Close: ", DoubleToString(closeBar1, _Digits),
-            " < RefLow: ", DoubleToString(RefLow, _Digits));
+            " > RefHigh: ", DoubleToString(RefHigh, _Digits));
       return true;
    }
 
-   Print("  Bear confirm check: Open=", DoubleToString(openBar1, _Digits),
+   Print("  Bull confirm check: Open=", DoubleToString(openBar1, _Digits),
          " Close=", DoubleToString(closeBar1, _Digits),
-         " RefLow=", DoubleToString(RefLow, _Digits), " -> NOT yet");
+         " RefHigh=", DoubleToString(RefHigh, _Digits), " -> NOT yet");
    return false;
 }
 
 //+------------------------------------------------------------------+
-//| CalculateRecentHighSL - highest high of N closed M5 bars + buffer|
+//| CalculateRecentLowSL - lowest low of N closed M5 bars - buffer   |
 //+------------------------------------------------------------------+
-double CalculateRecentHighSL()
+double CalculateRecentLowSL()
 {
-   double highestHigh = 0.0;
+   double lowestLow = DBL_MAX;
    for(int i = 1; i <= LookbackSwing; i++)
    {
-      double high_i = iHigh(_Symbol, PERIOD_M5, i);
-      if(high_i > highestHigh)
-         highestHigh = high_i;
+      double low_i = iLow(_Symbol, PERIOD_M5, i);
+      if(low_i < lowestLow)
+         lowestLow = low_i;
    }
 
-   double sl = highestHigh + BufferSLPoints * _Point;
+   double sl = lowestLow - BufferSLPoints * _Point;
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(tickSize > 0)
-      sl = NormalizeDouble(MathCeil(sl / tickSize) * tickSize, _Digits);
+      sl = NormalizeDouble(MathFloor(sl / tickSize) * tickSize, _Digits);
    else
       sl = NormalizeDouble(sl, _Digits);
 
-   Print("  CalculateRecentHighSL: HighestHigh=", DoubleToString(highestHigh, _Digits),
+   Print("  CalculateRecentLowSL: LowestLow=", DoubleToString(lowestLow, _Digits),
          " Buffer=", BufferSLPoints, "pts => SL=", DoubleToString(sl, _Digits));
    return sl;
 }
 
 //+------------------------------------------------------------------+
-//| CalculateTPFromPips - entry - fixed pips (SELL direction)         |
+//| CalculateTPFromPips - entry + fixed pips (BUY direction)          |
 //+------------------------------------------------------------------+
 double CalculateTPFromPips(double entryPrice)
 {
-   double tp = entryPrice - FixedTP_Pips * PipMultiplier() * _Point;
+   double tp = entryPrice + FixedTP_Pips * PipMultiplier() * _Point;
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(tickSize > 0)
       tp = NormalizeDouble(MathRound(tp / tickSize) * tickSize, _Digits);
@@ -408,7 +422,7 @@ double CalculateTPFromPips(double entryPrice)
       tp = NormalizeDouble(tp, _Digits);
 
    Print("  CalculateTPFromPips: Entry=", DoubleToString(entryPrice, _Digits),
-         " - ", FixedTP_Pips, " pips => TP=", DoubleToString(tp, _Digits));
+         " + ", FixedTP_Pips, " pips => TP=", DoubleToString(tp, _Digits));
    return tp;
 }
 
@@ -450,72 +464,74 @@ bool HasTradedToday()
 }
 
 //+------------------------------------------------------------------+
-//| ExecuteSellOrder - place SELL market order with SL/TP             |
+//| ExecuteBuyOrder - place BUY market order with SL/TP              |
 //|                                                                  |
-//| ABSOLUTE GUARD BLOCK before OrderSend:                           |
-//|   1. SELL only (no BUY logic)                                    |
-//|   2. RangeDefined: RefHigh > RefLow                              |
-//|   3. BreakoutConfirmed (state >= WAIT_RETURN_TO_LEVEL)           |
-//|   4. ReturnToLevelConfirmed (state >= WAIT_BEAR_CONFIRM)         |
-//|   5. BearConfirmValid (just validated)                            |
-//|   6. Temporal window not expired                                  |
-//|   7. TradeDoneToday == false                                      |
-//|   CurrentState must be WAIT_BEAR_CONFIRM                         |
+//| VALIDATION BEFORE OrderSend:                                     |
+//|   IF BreakoutConfirmed == true                                   |
+//|   AND RetestConfirmed == true                                    |
+//|   AND ConfirmationValid == true                                  |
+//|   AND TradeDoneToday == false                                    |
+//|   THEN Open BUY                                                  |
+//|   ELSE Do nothing.                                               |
+//|                                                                  |
+//|   CurrentState must be WAIT_CONFIRMATION                         |
+//|   SL < EntryPrice, distance >= MinSLPoints                       |
+//|   TP = EntryPrice + FixedTP_Pips                                 |
 //+------------------------------------------------------------------+
-void ExecuteSellOrder()
+void ExecuteBuyOrder()
 {
    // --- MANDATORY AUDIT LOGS ---
    Print("--- PRE-ORDER AUDIT ---");
    Print("  STATE=", EnumToString(CurrentState));
-   Print("  BreakoutConfirmed=", (CurrentState >= WAIT_RETURN_TO_LEVEL));
-   Print("  ReturnToLevelConfirmed=", (CurrentState >= WAIT_BEAR_CONFIRM));
-   Print("  BearConfirmValid=true (just validated)");
+   Print("  BreakoutConfirmed=", (CurrentState >= WAIT_RETEST));
+   Print("  RetestConfirmed=", (CurrentState >= WAIT_CONFIRMATION));
+   Print("  ConfirmationValid=true (just validated)");
    Print("  TradeDoneToday=", HasTradedToday());
 
-   // --- GUARD BLOCK: all 7 conditions must pass ---
-   bool rangeDefined = (RefHigh > RefLow);
-   bool breakoutDone = (CurrentState >= WAIT_RETURN_TO_LEVEL);
-   bool returnDone   = (CurrentState >= WAIT_BEAR_CONFIRM);
-   bool tradeDone    = HasTradedToday();
+   // --- GUARD BLOCK: all conditions must pass ---
+   bool rangeDefined   = (RefHigh > RefLow);
+   bool breakoutDone   = (CurrentState >= WAIT_RETEST);
+   bool retestDone     = (CurrentState >= WAIT_CONFIRMATION);
+   bool tradeDone      = HasTradedToday();
 
    if(!(rangeDefined
         && breakoutDone
-        && returnDone
-        && CurrentState == WAIT_BEAR_CONFIRM
+        && retestDone
+        && CurrentState == WAIT_CONFIRMATION
         && !tradeDone))
    {
-      Print("ExecuteSellOrder: BLOCKED by guard block.");
+      Print("ExecuteBuyOrder: BLOCKED by guard block.");
       Print("  RangeDefined=", rangeDefined,
             " BreakoutDone=", breakoutDone,
-            " ReturnDone=", returnDone,
+            " RetestDone=", retestDone,
             " State=", EnumToString(CurrentState),
             " TradeDoneToday=", tradeDone);
       return;
    }
 
-   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   if(bid <= 0)
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(ask <= 0)
    {
-      Print("ExecuteSellOrder: Invalid BID price.");
+      Print("ExecuteBuyOrder: Invalid ASK price.");
       return;
    }
 
-   double sl = CalculateRecentHighSL();
-   double tp = CalculateTPFromPips(bid);
+   double sl = CalculateRecentLowSL();
+   double tp = CalculateTPFromPips(ask);
 
-   // Validate SL > entry (SELL: SL must be above entry)
-   if(sl <= bid)
+   // Validate SL < entry (BUY: SL must be below entry)
+   if(sl >= ask)
    {
-      Print("ExecuteSellOrder: REJECTED - SL (", DoubleToString(sl, _Digits),
-            ") <= Bid (", DoubleToString(bid, _Digits), ")");
+      Print("ExecuteBuyOrder: REJECTED - SL (", DoubleToString(sl, _Digits),
+            ") >= Ask (", DoubleToString(ask, _Digits), ")");
       return;
    }
 
    // Validate minimum SL distance
-   double slDistPoints = (sl - bid) / _Point;
+   double slDistPoints = (ask - sl) / _Point;
    if(slDistPoints < MinSLPoints)
    {
-      Print("ExecuteSellOrder: REJECTED - SL distance (", DoubleToString(slDistPoints, 0),
+      Print("ExecuteBuyOrder: REJECTED - SL distance (", DoubleToString(slDistPoints, 0),
             " pts) < MinSLPoints (", MinSLPoints, ")");
       return;
    }
@@ -525,61 +541,61 @@ void ExecuteSellOrder()
    if(stopsLevel > 0)
    {
       double minDist = stopsLevel * _Point;
-      if((sl - bid) < minDist)
+      if((ask - sl) < minDist)
       {
-         Print("ExecuteSellOrder: REJECTED - SL too close. Min stops level: ",
+         Print("ExecuteBuyOrder: REJECTED - SL too close. Min stops level: ",
                stopsLevel, " pts");
          return;
       }
-      if((bid - tp) < minDist)
+      if((tp - ask) < minDist)
       {
-         Print("ExecuteSellOrder: REJECTED - TP too close. Min stops level: ",
+         Print("ExecuteBuyOrder: REJECTED - TP too close. Min stops level: ",
                stopsLevel, " pts");
          return;
       }
    }
 
-   Print("=== SENDING SELL ORDER ===");
+   Print("=== SENDING BUY ORDER ===");
    Print("  State: ", EnumToString(CurrentState));
-   Print("  Bid: ", DoubleToString(bid, _Digits));
-   Print("  SL:  ", DoubleToString(sl, _Digits), " (", DoubleToString(slDistPoints, 0), " pts above entry)");
+   Print("  Ask: ", DoubleToString(ask, _Digits));
+   Print("  SL:  ", DoubleToString(sl, _Digits), " (", DoubleToString(slDistPoints, 0), " pts below entry)");
    Print("  TP:  ", DoubleToString(tp, _Digits));
    Print("  Lots: ", DoubleToString(Lots, 2));
 
-   if(trade.Sell(Lots, _Symbol, bid, sl, tp, "ORB_SELL"))
+   if(trade.Buy(Lots, _Symbol, ask, sl, tp, "ORB_BUY"))
    {
-      // Transition: WAIT_BEAR_CONFIRM -> TRADE_DONE
+      // Transition: WAIT_CONFIRMATION -> TRADE_DONE
       CurrentState = TRADE_DONE;
       uint retcode = trade.ResultRetcode();
-      Print("=== SELL ORDER EXECUTED === State -> TRADE_DONE");
+      Print("=== BUY ORDER EXECUTED === State -> TRADE_DONE");
       Print("  Ticket: ", trade.ResultOrder(), " Retcode: ", retcode,
             " Comment: ", trade.ResultComment());
    }
    else
    {
-      Print("ExecuteSellOrder: FAILED - Retcode: ", trade.ResultRetcode(),
+      Print("ExecuteBuyOrder: FAILED - Retcode: ", trade.ResultRetcode(),
             " Comment: ", trade.ResultComment());
    }
 }
 
 //+------------------------------------------------------------------+
-//| Expert tick function - STRICT STATE MACHINE (SELL ONLY)          |
+//| Expert tick function - STRICT STATE MACHINE (BUY ONLY)          |
 //|                                                                  |
 //| WAIT_REF_M15_CLOSE    -> detect M15 ref, calc RefHigh/RefLow    |
-//| WAIT_BREAKOUT         -> Close[1] < RefLow                       |
-//| WAIT_RETURN_TO_LEVEL  -> High[1]>=RefLow-Tol, Close[1]<=RL+Tol  |
+//| WAIT_BREAKOUT         -> Close[1] > RefHigh                      |
+//| WAIT_RETEST           -> Low[1]<=RH+Tol, Close[1]>=RH-Tol       |
 //|                       -> CANCELLED if window expires             |
-//| WAIT_BEAR_CONFIRM     -> Close[1]<Open[1], Close[1]<RefLow->SELL|
+//| WAIT_CONFIRMATION     -> Close[1]>Open[1], Close[1]>RefHigh->BUY|
 //| TRADE_DONE            -> no more trading today                   |
 //|                                                                  |
-//| GUARDS / INTERDICTIONS:                                          |
-//| - SELL forbidden in WAIT_BREAKOUT                                |
-//| - SELL forbidden in WAIT_RETURN_TO_LEVEL                         |
-//| - SELL forbidden if ReturnToLevel was never validated after break|
+//| INTERDICTIONS ABSOLUES:                                          |
+//| - BUY forbidden in WAIT_BREAKOUT                                 |
+//| - BUY forbidden in WAIT_RETEST                                   |
+//| - BUY forbidden if RetestConfirmed == false                      |
 //| - Shift=0 (bar in formation) is NEVER used                       |
 //| - Max 1 trade per day                                             |
 //| - Each transition returns (separate bars enforced)                |
-//| - NO BUY logic anywhere                                          |
+//| - NO SELL logic anywhere                                         |
 //+------------------------------------------------------------------+
 void OnTick()
 {
@@ -613,29 +629,29 @@ void OnTick()
    if(!IsNewClosedM5Bar())
       return;
 
-   // --- State 1: Check breakout (SELL FORBIDDEN HERE) ---
+   // --- State 1: Check breakout (BUY FORBIDDEN HERE) ---
    if(CurrentState == WAIT_BREAKOUT)
    {
       CheckBreakoutM5();
       return;  // MUST wait for next bar
    }
 
-   // --- State 2: Check return to level (SELL FORBIDDEN HERE) ---
-   if(CurrentState == WAIT_RETURN_TO_LEVEL)
+   // --- State 2: Check retest/pullback (BUY FORBIDDEN HERE) ---
+   if(CurrentState == WAIT_RETEST)
    {
-      CheckReturnToLevel();
+      CheckRetestM5();
       return;  // MUST wait for next bar
    }
 
-   // --- State 3: Check bear confirmation and execute ---
-   if(CurrentState == WAIT_BEAR_CONFIRM)
+   // --- State 3: Check bullish confirmation and execute ---
+   if(CurrentState == WAIT_CONFIRMATION)
    {
-      if(CheckBearishConfirmationM5())
+      if(CheckBullishConfirmationM5())
       {
          // Final safety: verify no trade today
          if(!HasTradedToday())
          {
-            ExecuteSellOrder();
+            ExecuteBuyOrder();
          }
          else
          {
