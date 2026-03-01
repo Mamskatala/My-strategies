@@ -1,0 +1,106 @@
+//+------------------------------------------------------------------+
+//|                                    EA_BreakoutDeltaVolume_Example_Settings.txt |
+//|                                                                  |
+//+------------------------------------------------------------------+
+
+EXAMPLE SETTINGS FOR DIFFERENT TRADING STYLES
+==============================================
+
+1. CONSERVATIVE INTRADAY TRADING (EUR/USD, M30)
+   -------------------------------------------
+   BOoption = 2 (Volatility-based)
+   FixedPoint = 1.6
+   VolPeriod = 20
+   BreakoutFactor = 1.2
+   HoldOvernight = false
+   PrecedeByInsideDay = true
+   LotSize = 0.01
+   UseDeltaFilter = true
+   DeltaResetPeriod = 1 (Daily)
+   MinDeltaThreshold = 100
+   SessionEndHour = 17
+   SessionEndMinute = 0
+
+2. AGGRESSIVE DAY TRADING (Indices, M15)
+   --------------------------------------
+   BOoption = 2 (Volatility-based)
+   FixedPoint = 1.6
+   VolPeriod = 14
+   BreakoutFactor = 0.8
+   HoldOvernight = false
+   PrecedeByInsideDay = false
+   LotSize = 0.1
+   UseDeltaFilter = true
+   DeltaResetPeriod = 1 (Daily)
+   MinDeltaThreshold = 0
+   SessionEndHour = 16
+   SessionEndMinute = 30
+
+3. SWING TRADING (Daily Chart)
+   ---------------------------
+   BOoption = 1 (Fixed Point)
+   FixedPoint = 50.0 (adjust for instrument)
+   VolPeriod = 20
+   BreakoutFactor = 1.0
+   HoldOvernight = true
+   PrecedeByInsideDay = true
+   LotSize = 0.05
+   UseDeltaFilter = true
+   DeltaResetPeriod = 2 (Weekly)
+   MinDeltaThreshold = 500
+   SessionEndHour = 23
+   SessionEndMinute = 59
+
+4. SCALPING (M5 chart - High Frequency)
+   ------------------------------------
+   BOoption = 2 (Volatility-based)
+   FixedPoint = 1.6
+   VolPeriod = 10
+   BreakoutFactor = 0.5
+   HoldOvernight = false
+   PrecedeByInsideDay = false
+   LotSize = 0.01
+   UseDeltaFilter = true
+   DeltaResetPeriod = 0 (Never - continuous)
+   MinDeltaThreshold = 0
+   SessionEndHour = 17
+   SessionEndMinute = 0
+
+5. COMMODITY TRADING (H1 Chart - Gold/Silver)
+   ------------------------------------------
+   BOoption = 2 (Volatility-based)
+   FixedPoint = 2.0
+   VolPeriod = 24
+   BreakoutFactor = 1.5
+   HoldOvernight = false
+   PrecedeByInsideDay = true
+   LotSize = 0.1
+   UseDeltaFilter = true
+   DeltaResetPeriod = 1 (Daily)
+   MinDeltaThreshold = 200
+   SessionEndHour = 20
+   SessionEndMinute = 0
+
+OPTIMIZATION TIPS:
+=================
+1. FixedPoint: Adjust based on average daily range of your instrument
+2. BreakoutFactor: Lower values = more trades, Higher values = fewer but stronger signals
+3. VolPeriod: Shorter period = more responsive to recent volatility
+4. DeltaResetPeriod: Daily for intraday, Weekly for swing trading
+5. MinDeltaThreshold: Set to filter weak delta signals (test with backtest data)
+
+RISK MANAGEMENT:
+===============
+- Always start with small LotSize (0.01) when testing
+- Use proper position sizing (1-2% risk per trade)
+- Consider adding stop-loss and take-profit levels
+- Backtest thoroughly before live trading
+- Monitor Delta Volume indicator for divergences
+
+BACKTESTING RECOMMENDATIONS:
+===========================
+- Use at least 6-12 months of tick data
+- Test on different market conditions (trending, ranging, volatile)
+- Pay attention to win rate and average profit per trade
+- Check maximum drawdown
+- Analyze performance by time of day/day of week
