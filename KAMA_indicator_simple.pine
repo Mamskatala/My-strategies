@@ -1,0 +1,33 @@
+//@version=5
+indicator("KAMA - Simple", shorttitle="KAMA", overlay=true)
+
+// Inputs
+period = input.int(8, "Period", minval=1)
+fast = input.int(3, "Fast", minval=1)
+slow = input.int(30, "Slow", minval=1)
+
+// Variables
+var float kama = na
+var float fastend = na
+var float slowend = na
+
+// Initialize on first bar
+if bar_index == 0
+    kama := close
+    fastend := 2.0 / (fast + 1)
+    slowend := 2.0 / (slow + 1)
+else
+    // Calculate efficiency ratio
+    float signal = math.abs(close - close[period])
+    float noise = math.sum(math.abs(close - close[1]), period)
+    
+    float efratio = noise != 0 ? signal / noise : 1.0
+    
+    // Calculate smooth constant
+    float smooth = math.pow(efratio * (fastend - slowend) + slowend, 2)
+    
+    // Calculate KAMA
+    kama := kama[1] + smooth * (close - kama[1])
+
+// Plot KAMA
+plot(kama, "KAMA", color=color.blue, linewidth=2)
