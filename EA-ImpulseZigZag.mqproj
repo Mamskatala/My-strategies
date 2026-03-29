@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Project>
+  <PlatformToolset>v142</PlatformToolset>
+  <Configuration>Debug</Configuration>
+  <Platform>Win64</Platform>
+  <ProjectName>EA-ImpulseZigZag</ProjectName>
+  <Files>
+    <File>EA-ImpulseZigZag.mq5</File>
+  </Files>
+</Project>
